@@ -1591,7 +1591,7 @@ void NativeWindowViews::SetBackgroundMaterial(const std::string& material) {
   if (FAILED(result))
     LOG(WARNING) << "Failed to set caption color to transparent";
 
-  // Activate the translucent window
+  // Activate the non-client area of the window
   DefWindowProc(hwnd, WM_NCACTIVATE, TRUE, has_frame() ? 0 : -1);
 #endif
 }
