@@ -448,7 +448,6 @@ void InspectableWebContents::CloseDevTools() {
           base::BindOnce(
               [](std::unique_ptr<content::WebContents> web_contents) {},
               std::move(managed_devtools_web_contents_)));
-      managed_devtools_web_contents_ = nullptr;
     }
     if (!is_guest())
       web_contents_->Focus();
