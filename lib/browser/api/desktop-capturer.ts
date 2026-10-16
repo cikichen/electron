@@ -1,8 +1,11 @@
-import { BrowserWindow } from 'electron/main';
+import { BaseWindow } from 'electron/main';
 
-const { createDesktopCapturer, isDisplayMediaSystemPickerAvailable } = process._linkedBinding('electron_browser_desktop_capturer');
+const { createDesktopCapturer, isDisplayMediaSystemPickerAvailable } = process._linkedBinding(
+  'electron_browser_desktop_capturer'
+);
 
-const deepEqual = (a: ElectronInternal.GetSourcesOptions, b: ElectronInternal.GetSourcesOptions) => JSON.stringify(a) === JSON.stringify(b);
+const deepEqual = (a: ElectronInternal.GetSourcesOptions, b: ElectronInternal.GetSourcesOptions) =>
+  JSON.stringify(a) === JSON.stringify(b);
 
 let currentlyRunning: {
   options: ElectronInternal.GetSourcesOptions;
@@ -10,22 +13,22 @@ let currentlyRunning: {
 }[] = [];
 
 // |options.types| can't be empty and must be an array
-function isValid (options: Electron.SourcesOptions) {
+function isValid(options: Electron.SourcesOptions) {
   return Array.isArray(options?.types);
 }
 
 export { isDisplayMediaSystemPickerAvailable };
 
-export async function getSources (args: Electron.SourcesOptions) {
+export async function getSources(args: Electron.SourcesOptions) {
   if (!isValid(args)) throw new Error('Invalid options');
 
-  const resizableValues = new Map();
+  const resizableValues = new Map<number, boolean>();
   if (process.platform === 'darwin') {
     // Fix for bug in ScreenCaptureKit that modifies a window's styleMask the first time
     // it captures a non-resizable window. We record each non-resizable window's styleMask,
     // and we restore modified styleMasks later, after the screen capture.
-    for (const win of BrowserWindow.getAllWindows()) {
-      resizableValues.set([win.id], win.resizable);
+    for (const win of BaseWindow.getAllWindows()) {
+      resizableValues.set(win.id, win.resizable);
     }
   }
 
@@ -50,44 +53,50 @@ export async function getSources (args: Electron.SourcesOptions) {
     }
   }
 
+  let resolveGetSources!: (value: ElectronInternal.GetSourcesResult[]) => void;
+  let rejectGetSources!: (reason?: any) => void;
+
   const getSources = new Promise<ElectronInternal.GetSourcesResult[]>((resolve, reject) => {
-    let capturer: ElectronInternal.DesktopCapturer | null = createDesktopCapturer();
+    resolveGetSources = resolve;
+    rejectGetSources = reject;
+  });
 
-    const stopRunning = () => {
-      if (capturer) {
-        delete capturer._onerror;
-        delete capturer._onfinished;
-        capturer = null;
+  // Register in currentlyRunning BEFORE startHandling so that synchronous
+  // completion (e.g. when no capturers are created) can properly clean up.
+  currentlyRunning.push({ options, getSources });
 
-        if (process.platform === 'darwin') {
-          for (const win of BrowserWindow.getAllWindows()) {
-            if (resizableValues.has(win.id)) {
-              win.resizable = resizableValues.get(win.id);
-            }
-          };
+  let capturer: ElectronInternal.DesktopCapturer | null = createDesktopCapturer();
+
+  const stopRunning = () => {
+    if (capturer) {
+      delete capturer._onerror;
+      delete capturer._onfinished;
+      capturer = null;
+
+      if (process.platform === 'darwin') {
+        for (const win of BaseWindow.getAllWindows()) {
+          const resizable = resizableValues.get(win.id);
+          if (resizable !== undefined && win.resizable !== resizable) {
+            win.resizable = resizable;
+          }
         }
       }
-      // Remove from currentlyRunning once we resolve or reject
-      currentlyRunning = currentlyRunning.filter(running => running.options !== options);
-    };
+    }
+    // Remove from currentlyRunning once we resolve or reject
+    currentlyRunning = currentlyRunning.filter((running) => running.options !== options);
+  };
 
-    capturer._onerror = (error: string) => {
-      stopRunning();
-      reject(error);
-    };
+  capturer._onerror = (error: string) => {
+    stopRunning();
+    rejectGetSources(error);
+  };
 
-    capturer._onfinished = (sources: Electron.DesktopCapturerSource[]) => {
-      stopRunning();
-      resolve(sources);
-    };
+  capturer._onfinished = (sources: Electron.DesktopCapturerSource[]) => {
+    stopRunning();
+    resolveGetSources(sources);
+  };
 
-    capturer.startHandling(captureWindow, captureScreen, thumbnailSize, fetchWindowIcons);
-  });
-
-  currentlyRunning.push({
-    options,
-    getSources
-  });
+  capturer.startHandling(captureWindow, captureScreen, thumbnailSize, fetchWindowIcons);
 
   return getSources;
 }

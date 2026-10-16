@@ -10,12 +10,12 @@
 
 namespace gin {
 class Arguments;
-}
+}  // namespace gin
 
 namespace gin_helper {
 
 // Wrappable is a base class for C++ objects that have corresponding v8 wrapper
-// objects. To retain a Wrappable object on the stack, use a gin::Handle.
+// objects. To retain a Wrappable object on the stack, use a gin_helper::Handle.
 //
 // USAGE:
 // // my_class.h
@@ -25,9 +25,9 @@ namespace gin_helper {
 // };
 //
 // Subclasses should also typically have private constructors and expose a
-// static Create function that returns a gin::Handle. Forcing creators through
-// this static Create function will enforce that clients actually create a
-// wrapper for the object. If clients fail to create a wrapper for a wrappable
+// static Create function that returns a gin_helper::Handle. Forcing creators
+// through this static Create function will enforce that clients actually create
+// a wrapper for the object. If clients fail to create a wrapper for a wrappable
 // object, the object will leak because we use the weak callback from the
 // wrapper as the signal to delete the wrapped object.
 class WrappableBase {
@@ -48,8 +48,12 @@ class WrappableBase {
   // This method should only be called by classes using Constructor.
   virtual void InitWith(v8::Isolate* isolate, v8::Local<v8::Object> wrapper);
 
+  // Called by InitWith once GetWrapper() works, before the wrapper's JS _init
+  // (if it has one) runs.
+  virtual void OnWrapped(v8::Isolate* isolate) {}
+
   // Helper to init with arguments.
-  void InitWithArgs(gin::Arguments* args);
+  void InitWithArgs(const gin::Arguments* args);
 
   v8::Global<v8::Object> wrapper_;  // Weak
 
@@ -59,7 +63,7 @@ class WrappableBase {
   static void SecondWeakCallback(
       const v8::WeakCallbackInfo<WrappableBase>& data);
 
-  raw_ptr<v8::Isolate> isolate_ = nullptr;
+  raw_ptr<v8::Isolate, LeakedDanglingUntriaged> isolate_ = nullptr;
 };
 
 }  // namespace gin_helper

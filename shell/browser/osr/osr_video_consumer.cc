@@ -13,8 +13,49 @@
 #include "services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom-shared.h"
 #include "shell/browser/osr/osr_render_widget_host_view.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
-#include "third_party/skia/include/core/SkRegion.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
 #include "ui/gfx/skbitmap_operations.h"
+
+namespace {
+
+media::VideoPixelFormat GetTargetPixelFormatFromOption(
+    const std::string& pixel_format_option) {
+  if (pixel_format_option == "argb") {
+    return media::PIXEL_FORMAT_ARGB;
+  } else if (pixel_format_option == "rgbaf16") {
+    return media::PIXEL_FORMAT_RGBAF16;
+  } else if (pixel_format_option == "nv12") {
+    return media::PIXEL_FORMAT_NV12;
+  }
+
+  // Use ARGB as default.
+  return media::PIXEL_FORMAT_ARGB;
+}
+
+// Formats a shared texture paint event can describe.
+bool IsSupportedSharedTextureFormat(media::VideoPixelFormat format) {
+  return format == media::PIXEL_FORMAT_ARGB ||
+         format == media::PIXEL_FORMAT_ABGR ||
+         format == media::PIXEL_FORMAT_RGBAF16 ||
+         format == media::PIXEL_FORMAT_NV12;
+}
+
+// Whether |handle| is the kind of GPU buffer the capturer produces on this
+// platform.
+bool IsPlatformSharedTextureHandle(const gfx::GpuMemoryBufferHandle& handle) {
+#if BUILDFLAG(IS_WIN)
+  return handle.type == gfx::DXGI_SHARED_HANDLE;
+#elif BUILDFLAG(IS_APPLE)
+  return handle.type == gfx::IO_SURFACE_BUFFER;
+#elif BUILDFLAG(IS_LINUX)
+  return handle.type == gfx::NATIVE_PIXMAP;
+#else
+  return false;
+#endif
+}
+
+}  // namespace
 
 namespace electron {
 
@@ -26,7 +67,10 @@ OffScreenVideoConsumer::OffScreenVideoConsumer(
       video_capturer_(view->CreateVideoCapturer()) {
   video_capturer_->SetAutoThrottlingEnabled(false);
   video_capturer_->SetMinSizeChangePeriod(base::TimeDelta());
-  video_capturer_->SetFormat(media::PIXEL_FORMAT_ARGB);
+
+  auto format = GetTargetPixelFormatFromOption(
+      view->offscreen_shared_texture_pixel_format());
+  video_capturer_->SetFormat(format);
 
   // https://crrev.org/c/6438681
   // Disable capturer's animation lock-in feature for offscreen capture to
@@ -58,9 +102,10 @@ OffScreenVideoConsumer::~OffScreenVideoConsumer() = default;
 void OffScreenVideoConsumer::SetActive(bool active) {
   if (active) {
     video_capturer_->Start(
-        this, view_->offscreen_use_shared_texture()
-                  ? viz::mojom::BufferFormatPreference::kPreferGpuMemoryBuffer
-                  : viz::mojom::BufferFormatPreference::kDefault);
+        this,
+        view_->offscreen_use_shared_texture()
+            ? viz::mojom::BufferFormatPreference::kPreferMappableSharedImage
+            : viz::mojom::BufferFormatPreference::kDefault);
   } else {
     video_capturer_->Stop();
   }
@@ -82,10 +127,15 @@ void OffScreenVideoConsumer::OnFrameCaptured(
 
   // Offscreen using GPU shared texture
   if (view_->offscreen_use_shared_texture()) {
-    CHECK(data->is_gpu_memory_buffer_handle());
+    if (!data->is_gpu_memory_buffer_handle() ||
+        !IsSupportedSharedTextureFormat(info->pixel_format)) {
+      return;
+    }
 
     auto& orig_handle = data->get_gpu_memory_buffer_handle();
-    CHECK(!orig_handle.is_null());
+    if (!IsPlatformSharedTextureHandle(orig_handle)) {
+      return;
+    }
 
     // Clone the handle to support keep the handle alive after the callback
     auto gmb_handle = orig_handle.Clone();
@@ -95,6 +145,7 @@ void OffScreenVideoConsumer::OnFrameCaptured(
     texture.coded_size = info->coded_size;
     texture.visible_rect = info->visible_rect;
     texture.content_rect = content_rect;
+    texture.color_space = info->color_space;
     texture.timestamp = info->timestamp.InMicroseconds();
     texture.frame_count = info->metadata.capture_counter.value_or(0);
     texture.capture_update_rect = info->metadata.capture_update_rect;
@@ -107,10 +158,12 @@ void OffScreenVideoConsumer::OnFrameCaptured(
         reinterpret_cast<uintptr_t>(gmb_handle.dxgi_handle().buffer_handle());
 #elif BUILDFLAG(IS_APPLE)
     texture.shared_texture_handle =
-        reinterpret_cast<uintptr_t>(gmb_handle.io_surface.get());
+        reinterpret_cast<uintptr_t>(gmb_handle.io_surface().get());
 #elif BUILDFLAG(IS_LINUX)
     const auto& native_pixmap = gmb_handle.native_pixmap_handle();
     texture.modifier = native_pixmap.modifier;
+    texture.supports_zero_copy_webgpu_import =
+        native_pixmap.supports_zero_copy_webgpu_import;
     for (const auto& plane : native_pixmap.planes) {
       texture.planes.emplace_back(plane.stride, plane.offset, plane.size,
                                   plane.fd.get());
@@ -125,7 +178,13 @@ void OffScreenVideoConsumer::OnFrameCaptured(
     return;
   }
 
-  // Regular shared texture capture using shared memory
+  // Regular shared texture capture using shared memory. The bitmap below is
+  // N32, so only 4-byte-per-pixel frames can back it.
+  if (!data->is_read_only_shmem_region() ||
+      (info->pixel_format != media::PIXEL_FORMAT_ARGB &&
+       info->pixel_format != media::PIXEL_FORMAT_ABGR)) {
+    return;
+  }
   const auto& data_region = data->get_read_only_shmem_region();
 
   if (!data_region.IsValid()) {
@@ -141,6 +200,27 @@ void OffScreenVideoConsumer::OnFrameCaptured(
   if (mapping.size() <
       media::VideoFrame::AllocationSize(info->pixel_format, info->coded_size)) {
     DLOG(ERROR) << "Shared memory size was less than expected.";
+    return;
+  }
+
+  // |content_rect| and |info->coded_size| arrive from the GPU process over
+  // Mojo. The bitmap below is sized from |content_rect| but backed by the
+  // shared-memory mapping, so a hostile peer could send a tiny region with an
+  // oversized |content_rect| and have us read past the mapping. Clamp both the
+  // geometry and the resulting byte size to the mapping before wrapping it.
+  const size_t row_bytes =
+      media::VideoFrame::RowBytes(media::VideoFrame::Plane::kARGB,
+                                  info->pixel_format, info->coded_size.width());
+  const SkImageInfo image_info = SkImageInfo::MakeN32(
+      content_rect.width(), content_rect.height(), kPremul_SkAlphaType);
+  const size_t required_bytes = image_info.computeByteSize(row_bytes);
+  if (!gfx::Rect(info->coded_size).Contains(content_rect) ||
+      SkImageInfo::ByteSizeOverflowed(required_bytes) ||
+      required_bytes > mapping.size()) {
+    DLOG(ERROR) << "content_rect " << content_rect.ToString()
+                << " is not bounded by coded_size "
+                << info->coded_size.ToString() << " / mapping size "
+                << mapping.size();
     return;
   }
 
@@ -162,11 +242,7 @@ void OffScreenVideoConsumer::OnFrameCaptured(
 
   SkBitmap bitmap;
   bitmap.installPixels(
-      SkImageInfo::MakeN32(content_rect.width(), content_rect.height(),
-                           kPremul_SkAlphaType),
-      pixels,
-      media::VideoFrame::RowBytes(media::VideoFrame::Plane::kARGB,
-                                  info->pixel_format, info->coded_size.width()),
+      image_info, pixels, row_bytes,
       [](void* addr, void* context) {
         delete static_cast<FramePinner*>(context);
       },

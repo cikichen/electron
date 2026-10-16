@@ -208,6 +208,10 @@ Emitted when the window exits from a maximized state.
 
 Emitted when the window is minimized.
 
+> [!NOTE]
+> On Wayland, “minimized” is not currently a supported state. The minimize event will only fire when triggered by client-side decoration (e.g. clicking the minimize
+> button on a frameless window’s Window Control Overlay)
+
 #### Event: 'restore'
 
 Emitted when the window is restored from a minimized state.
@@ -351,7 +355,11 @@ Emitted when the window has closed a sheet.
 
 #### Event: 'new-window-for-tab' _macOS_
 
-Emitted when the native new tab button is clicked.
+Emitted when the user clicks the native macOS new tab button. The new
+tab button is only visible if the current `BrowserWindow` has a
+`tabbingIdentifier`.
+
+You must create a window in this handler in order for macOS tabbing to work as expected.
 
 #### Event: 'system-context-menu' _Windows_ _Linux_
 
@@ -368,6 +376,15 @@ as `-webkit-app-region: drag` in a frameless window.
 Calling `event.preventDefault()` will prevent the menu from being displayed.
 
 To convert `point` to DIP, use [`screen.screenToDipPoint(point)`](./screen.md#screenscreentodippointpoint-windows-linux).
+
+#### Event: 'persisted-state-restored'
+
+Emitted after the persisted window state has been restored.
+
+Window state includes the window bounds (x, y, height, width) and display mode (maximized, fullscreen, kiosk).
+
+> [!NOTE]
+> This event is only emitted when [windowStatePersistence](structures/window-state-persistence.md) is enabled in [BaseWindowConstructorOptions](structures/base-window-options.md) or in [BrowserWindowConstructorOptions](structures/browser-window-options.md).
 
 ### Static Methods
 
@@ -386,6 +403,14 @@ Returns `BaseWindow | null` - The window that is focused in this application, ot
 * `id` Integer
 
 Returns `BaseWindow | null` - The window with the given `id`.
+
+#### `BaseWindow.clearPersistedState(name)`
+
+* `name` string - The window `name` to clear state for (see [BaseWindowConstructorOptions](structures/base-window-options.md)).
+
+Clears the saved state for a window with the given name. This removes all persisted window bounds, display mode, and work area information that was previously saved when `windowStatePersistence` was enabled.
+
+If the window `name` is empty or the window state doesn't exist, the method will log a warning.
 
 ### Instance Properties
 
@@ -578,6 +603,9 @@ Returns `boolean` - Whether the window is focused.
 
 Returns `boolean` - Whether the window is destroyed.
 
+> [!NOTE]
+> Once a window is destroyed, accessing most of its other properties and methods throws `Object has been destroyed`, so callbacks that may run after the window is gone should guard with `isDestroyed()`.
+
 #### `win.show()`
 
 Shows and gives focus to the window.
@@ -755,6 +783,9 @@ Returns [`Rectangle`](structures/rectangle.md) - The `bounds` of the window as `
 
 > [!NOTE]
 > On macOS, the y-coordinate value returned will be at minimum the [Tray](tray.md) height. For example, calling `win.setBounds({ x: 25, y: 20, width: 800, height: 600 })` with a tray height of 38 means that `win.getBounds()` will return `{ x: 25, y: 38, width: 800, height: 600 }`.
+
+> [!NOTE]
+> On Wayland, this method will return `{ x: 0, y: 0, ... }` as introspecting or programmatically changing the global window coordinates is prohibited.
 
 #### `win.getBackgroundColor()`
 
@@ -937,9 +968,13 @@ Sets whether the window should show always on top of other windows. After
 setting this, the window is still a normal window, not a toolbox window which
 can not be focused on.
 
+Not supported on Wayland (Linux).
+
 #### `win.isAlwaysOnTop()`
 
 Returns `boolean` - Whether the window is always on top of other windows.
+
+Not supported on Wayland (Linux).
 
 #### `win.moveAbove(mediaSourceId)`
 
@@ -968,6 +1003,9 @@ Moves window to `x` and `y`.
 #### `win.getPosition()`
 
 Returns `Integer[]` - Contains the window's current position.
+
+> [!NOTE]
+> On Wayland, this method will return `[0, 0]` as introspecting or programmatically changing the global window coordinates is prohibited.
 
 #### `win.setTitle(title)`
 
@@ -1043,7 +1081,7 @@ under this mode apps can choose to optimize their UI for tablets, such as
 enlarging the titlebar and hiding titlebar buttons.
 
 This API returns whether the window is in tablet mode, and the `resize` event
-can be be used to listen to changes to tablet mode.
+can be used to listen to changes to tablet mode.
 
 #### `win.getMediaSourceId()`
 
@@ -1130,13 +1168,14 @@ Sets progress value in progress bar. Valid range is \[0, 1.0].
 Remove progress bar when progress < 0;
 Change to indeterminate mode when progress > 1.
 
-On Linux platform, only supports Unity desktop environment, you need to specify
-the `*.desktop` file name to `desktopName` field in `package.json`. By default,
-it will assume `{app.name}.desktop`.
-
 On Windows, a mode can be passed. Accepted values are `none`, `normal`,
 `indeterminate`, `error`, and `paused`. If you call `setProgressBar` without a
 mode set (but with a value within the valid range), `normal` will be assumed.
+
+On Linux, the progress bar shows on docks and taskbars that support the
+LauncherEntry D-Bus API. It is associated with the app's `.desktop` file, so
+[`app.setDesktopName`](app.md#appsetdesktopnamename-linux) must match the name
+of the app's actual `.desktop` file. Indeterminate mode is not supported.
 
 #### `win.setOverlayIcon(overlay, description)` _Windows_
 
@@ -1260,6 +1299,47 @@ Sets the properties for the window's taskbar button.
 > `relaunchCommand` and `relaunchDisplayName` must always be set
 > together. If one of those properties is not set, then neither will be used.
 
+#### `win.setAccentColor(accentColor)` _Windows_
+
+* `accentColor` boolean | string | null - The accent color for the window. By default, follows user preference in System Settings. To reset to system default, pass `null`.
+
+Sets the system accent color and highlighting of active window border.
+
+The `accentColor` parameter accepts the following values:
+
+* **Color string** - Like `true`, but sets a custom accent color using standard CSS color formats (Hex, RGB, RGBA, HSL, HSLA, or named colors). Alpha values in RGBA/HSLA formats are ignored and the color is treated as fully opaque.
+* **`true`** - Enable accent color highlighting for the window with the system accent color regardless of whether accent colors are enabled for windows in System `Settings.`
+* **`false`** - Disable accent color highlighting for the window regardless of whether accent colors are currently enabled for windows in System Settings.
+* **`null`** - Reset window accent color behavior to follow behavior set in System Settings.
+
+Examples:
+
+```js
+const win = new BrowserWindow({ frame: false })
+
+// Set red accent color.
+win.setAccentColor('#ff0000')
+
+// RGB format (alpha ignored if present).
+win.setAccentColor('rgba(255,0,0,0.5)')
+
+// Enable accent color, using the color specified in System Settings.
+win.setAccentColor(true)
+
+// Disable accent color.
+win.setAccentColor(false)
+
+// Reset window accent color behavior to follow behavior set in System Settings.
+win.setAccentColor(null)
+```
+
+#### `win.getAccentColor()` _Windows_
+
+Returns `string | boolean` - the system accent color and highlighting of active window border in Hex RGB format.
+
+If a color has been set for the window that differs from the system accent color, the window accent color will
+be returned. Otherwise, a boolean will be returned, with `true` indicating that the window uses the global system accent color, and `false` indicating that accent color highlighting is disabled for this window.
+
 #### `win.setIcon(icon)` _Windows_ _Linux_
 
 * `icon` [NativeImage](native-image.md) | string
@@ -1341,7 +1421,9 @@ Makes the window ignore all mouse events.
 
 All mouse events happened in this window will be passed to the window below
 this window, but if this window has focus, it will still receive keyboard
-events.
+events. On Linux this is supported on both X11 and Wayland. On X11 the X server
+has applied the window's new input shape when the call returns; on Wayland the
+new input region is applied with the window's next frame.
 
 #### `win.setContentProtection(enable)` _macOS_ _Windows_
 
@@ -1353,6 +1435,21 @@ On macOS it sets the NSWindow's sharingType to NSWindowSharingNone.
 On Windows it calls SetWindowDisplayAffinity with `WDA_EXCLUDEFROMCAPTURE`.
 For Windows 10 version 2004 and up the window will be removed from capture entirely,
 older Windows versions behave as if `WDA_MONITOR` is applied capturing a black window.
+The change takes effect with the next desktop composition, not when the call returns, so a
+capture started immediately afterwards can still contain the window.
+
+Protection also applies in a Windows remote session. A Remote Desktop client still
+shows the window to the remote user, but remote access software that works by
+capturing the desktop cannot. To leave windows unprotected in remote sessions
+instead, disable the `AllowWindowCaptureExclusionInRemoteSessions` Chromium feature
+at the start of your main script. `win.isContentProtected()` still returns `true`
+in that case.
+
+```js
+const { app } = require('electron')
+
+app.commandLine.appendSwitch('disable-features', 'AllowWindowCaptureExclusionInRemoteSessions')
+```
 
 #### `win.isContentProtected()` _macOS_ _Windows_
 

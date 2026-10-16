@@ -8,12 +8,17 @@
 
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
-#include "gin/handle.h"
+#include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "shell/browser/api/electron_api_ipc_dispatch.h"
+#include "shell/browser/api/electron_api_ipc_event.h"
 #include "shell/browser/api/electron_api_session.h"
-#include "shell/common/gin_converters/content_converter.h"
-#include "shell/common/gin_converters/frame_converter.h"
-#include "shell/common/gin_helper/event.h"
+#include "shell/browser/api/electron_api_web_contents.h"
+#include "shell/browser/api/message_port.h"
+#include "shell/browser/javascript_environment.h"
+#include "shell/common/gin_converters/serialized_value_converter.h"
+#include "shell/common/gin_helper/reply_channel.h"
+#include "shell/common/v8_util.h"
 
 namespace electron {
 ElectronApiIPCHandlerImpl::ElectronApiIPCHandlerImpl(
@@ -42,127 +47,144 @@ void ElectronApiIPCHandlerImpl::OnConnectionError() {
 
 void ElectronApiIPCHandlerImpl::Message(bool internal,
                                         const std::string& channel,
-                                        blink::CloneableMessage arguments) {
-  auto* session = GetSession();
-  v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
-  v8::HandleScope handle_scope(isolate);
-  auto event = MakeIPCEvent(isolate, session, internal);
-  if (event.IsEmpty())
-    return;
-  session->Message(event, channel, std::move(arguments));
+                                        electron::SerializedValue arguments) {
+  gin::WeakCell<api::Session>* session = GetSession();
+  if (session && session->Get()) {
+    v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    auto* event = MakeIPCEvent(isolate, session->Get(), internal);
+    if (!event)
+      return;
+    if (!ipc_dispatch::IsReady())
+      return;
+    ipc_dispatch::Message(isolate, api::WebContents::From(web_contents()),
+                          event, internal, channel,
+                          gin::ConvertToV8(isolate, arguments),
+                          /*sync=*/false);
+  }
 }
 void ElectronApiIPCHandlerImpl::Invoke(bool internal,
                                        const std::string& channel,
-                                       blink::CloneableMessage arguments,
+                                       electron::SerializedValue arguments,
                                        InvokeCallback callback) {
-  auto* session = GetSession();
-  v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
-  v8::HandleScope handle_scope(isolate);
-  auto event = MakeIPCEvent(isolate, session, internal, std::move(callback));
-  if (event.IsEmpty())
-    return;
-  session->Invoke(event, channel, std::move(arguments));
+  gin::WeakCell<api::Session>* session = GetSession();
+  if (session && session->Get()) {
+    v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    auto* event =
+        MakeIPCEvent(isolate, session->Get(), internal, std::move(callback));
+    if (!event)
+      return;
+    if (!ipc_dispatch::IsReady())
+      return;
+    ipc_dispatch::Invoke(isolate, api::WebContents::From(web_contents()), event,
+                         internal, channel,
+                         gin::ConvertToV8(isolate, arguments));
+  }
 }
 
 void ElectronApiIPCHandlerImpl::ReceivePostMessage(
     const std::string& channel,
     blink::TransferableMessage message) {
-  auto* session = GetSession();
-  v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
-  v8::HandleScope handle_scope(isolate);
-  auto event = MakeIPCEvent(isolate, session, false);
-  if (event.IsEmpty())
-    return;
-  session->ReceivePostMessage(event, channel, std::move(message));
+  gin::WeakCell<api::Session>* session = GetSession();
+  if (session && session->Get()) {
+    v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    auto* event = MakeIPCEvent(isolate, session->Get(), false);
+    if (!event)
+      return;
+    if (!ipc_dispatch::IsReady())
+      return;
+    v8::LocalVector<v8::Value> ports(isolate);
+    if (!MessagePort::EntanglePorts(isolate, std::move(message.ports),
+                                    &ports)) {
+      return;
+    }
+    ipc_dispatch::PostMessage(
+        isolate, api::WebContents::From(web_contents()), event, channel,
+        DeserializeV8Value(isolate, message), std::move(ports));
+  }
 }
 
 void ElectronApiIPCHandlerImpl::MessageSync(bool internal,
                                             const std::string& channel,
-                                            blink::CloneableMessage arguments,
+                                            electron::SerializedValue arguments,
                                             MessageSyncCallback callback) {
-  auto* session = GetSession();
-  v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
-  v8::HandleScope handle_scope(isolate);
-  auto event = MakeIPCEvent(isolate, session, internal, std::move(callback));
-  if (event.IsEmpty())
-    return;
-  session->MessageSync(event, channel, std::move(arguments));
+  gin::WeakCell<api::Session>* session = GetSession();
+  if (session && session->Get()) {
+    v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    auto* event =
+        MakeIPCEvent(isolate, session->Get(), internal, std::move(callback));
+    if (!event)
+      return;
+    if (!ipc_dispatch::IsReady())
+      return;
+    ipc_dispatch::Message(isolate, api::WebContents::From(web_contents()),
+                          event, internal, channel,
+                          gin::ConvertToV8(isolate, arguments),
+                          /*sync=*/true);
+  }
 }
 
-void ElectronApiIPCHandlerImpl::MessageHost(const std::string& channel,
-                                            blink::CloneableMessage arguments) {
-  auto* session = GetSession();
-  v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
-  v8::HandleScope handle_scope(isolate);
-  auto event = MakeIPCEvent(isolate, session, false);
-  if (event.IsEmpty())
-    return;
-  session->MessageHost(event, channel, std::move(arguments));
+void ElectronApiIPCHandlerImpl::MessageHost(
+    const std::string& channel,
+    electron::SerializedValue arguments) {
+  gin::WeakCell<api::Session>* session = GetSession();
+  if (session && session->Get()) {
+    v8::Isolate* isolate = electron::JavascriptEnvironment::GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    auto* event = MakeIPCEvent(isolate, session->Get(), false);
+    if (!event)
+      return;
+    if (!ipc_dispatch::IsReady())
+      return;
+    ipc_dispatch::MessageHost(isolate, api::WebContents::From(web_contents()),
+                              event, channel,
+                              gin::ConvertToV8(isolate, arguments));
+  }
 }
 
 content::RenderFrameHost* ElectronApiIPCHandlerImpl::GetRenderFrameHost() {
   return content::RenderFrameHost::FromID(render_frame_host_id_);
 }
 
-api::Session* ElectronApiIPCHandlerImpl::GetSession() {
+gin::WeakCell<api::Session>* ElectronApiIPCHandlerImpl::GetSession() {
   auto* rfh = GetRenderFrameHost();
   return rfh ? api::Session::FromBrowserContext(rfh->GetBrowserContext())
              : nullptr;
 }
 
-gin::Handle<gin_helper::internal::Event>
-ElectronApiIPCHandlerImpl::MakeIPCEvent(
+api::IpcMainEvent* ElectronApiIPCHandlerImpl::MakeIPCEvent(
     v8::Isolate* isolate,
     api::Session* session,
     bool internal,
     electron::mojom::ElectronApiIPC::InvokeCallback callback) {
   if (!session) {
-    if (callback) {
-      // We must always invoke the callback if present.
-      gin_helper::internal::ReplyChannel::Create(isolate, std::move(callback))
-          ->SendError("Session does not exist");
-    }
+    // We must always invoke the callback if present.
+    gin_helper::internal::ReplyChannel::SendError(isolate, std::move(callback),
+                                                  "Session does not exist");
     return {};
   }
 
   api::WebContents* api_web_contents = api::WebContents::From(web_contents());
   if (!api_web_contents) {
-    if (callback) {
-      // We must always invoke the callback if present.
-      gin_helper::internal::ReplyChannel::Create(isolate, std::move(callback))
-          ->SendError("WebContents does not exist");
-    }
+    // We must always invoke the callback if present.
+    gin_helper::internal::ReplyChannel::SendError(isolate, std::move(callback),
+                                                  "WebContents does not exist");
     return {};
   }
 
   v8::Local<v8::Object> wrapper;
   if (!api_web_contents->GetWrapper(isolate).ToLocal(&wrapper)) {
-    if (callback) {
-      // We must always invoke the callback if present.
-      gin_helper::internal::ReplyChannel::Create(isolate, std::move(callback))
-          ->SendError("WebContents was destroyed");
-    }
+    // We must always invoke the callback if present.
+    gin_helper::internal::ReplyChannel::SendError(isolate, std::move(callback),
+                                                  "WebContents was destroyed");
     return {};
   }
 
-  content::RenderFrameHost* frame = GetRenderFrameHost();
-  gin::Handle<gin_helper::internal::Event> event =
-      gin_helper::internal::Event::New(isolate);
-  gin_helper::Dictionary dict(isolate, event.ToV8().As<v8::Object>());
-  dict.Set("type", "frame");
-  dict.Set("sender", web_contents());
-  if (internal)
-    dict.SetHidden("internal", internal);
-  if (callback)
-    dict.Set("_replyChannel", gin_helper::internal::ReplyChannel::Create(
-                                  isolate, std::move(callback)));
-  if (frame) {
-    dict.SetGetter("senderFrame", frame);
-    dict.Set("frameId", frame->GetRoutingID());
-    dict.Set("processId", frame->GetProcess()->GetID().GetUnsafeValue());
-    dict.Set("frameTreeNodeId", frame->GetFrameTreeNodeId());
-  }
-  return event;
+  return api::IpcMainEvent::Create(isolate, wrapper, GetRenderFrameHost(),
+                                   std::move(callback));
 }
 
 // static

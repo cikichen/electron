@@ -12,31 +12,38 @@ invisible state of the `viz::DisplayScheduler` owned
 by the `ui::Compositor`.
 
 diff --git a/ui/compositor/compositor.cc b/ui/compositor/compositor.cc
-index a63fea66e8fa675fb23b0cc2cb2bf63a18a11f94..76be1ae3f1f9981acc8062b831e6bb2b89f0234b 100644
+index 9849318dc25d1677d85b6a0c50e26d12707a313c..3143640cdb21ef2b2d2d2f6d5b49348f3904bf1c 100644
 --- a/ui/compositor/compositor.cc
 +++ b/ui/compositor/compositor.cc
-@@ -358,7 +358,8 @@ void Compositor::SetLayerTreeFrameSink(
+@@ -359,9 +359,11 @@ void Compositor::SetLayerTreeFrameSink(
+   // to match the Compositor's.
    if (display_private_) {
-     disabled_swap_until_resize_ = false;
      display_private_->Resize(size());
--    display_private_->SetDisplayVisible(host_->IsVisible());
 +    // Invisible display is throttling itself.
-+    display_private_->SetDisplayVisible(background_throttling_ ? host_->IsVisible() : true);
+     display_private_->SetDisplayVisible(
+-        host_->IsVisible() ? viz::mojom::DisplayVisibility::kVisible
+-                           : viz::mojom::DisplayVisibility::kInvisible);
++        host_->IsVisible() || !background_throttling_
++            ? viz::mojom::DisplayVisibility::kVisible
++            : viz::mojom::DisplayVisibility::kInvisible);
      display_private_->SetDisplayColorSpaces(display_color_spaces_);
      display_private_->SetDisplayColorMatrix(
          gfx::SkM44ToTransform(display_color_matrix_));
-@@ -609,7 +610,9 @@ void Compositor::SetVisible(bool visible) {
+@@ -601,9 +603,11 @@ void Compositor::SetVisible(bool visible) {
    // updated then. We need to call this even if the visibility hasn't changed,
    // for the same reason.
-   if (display_private_)
--    display_private_->SetDisplayVisible(visible);
+   if (display_private_) {
 +    // Invisible display is throttling itself.
-+    display_private_->SetDisplayVisible(
-+        background_throttling_ ? visible : true);
+     display_private_->SetDisplayVisible(
+-        visible ? viz::mojom::DisplayVisibility::kVisible
+-                : viz::mojom::DisplayVisibility::kInvisible);
++        visible || !background_throttling_
++            ? viz::mojom::DisplayVisibility::kVisible
++            : viz::mojom::DisplayVisibility::kInvisible);
+   }
  
    if (changed) {
-     observer_list_.Notify(&CompositorObserver::OnCompositorVisibilityChanged,
-@@ -1073,6 +1076,15 @@ void Compositor::MaybeUpdateObserveBeginFrame() {
+@@ -1072,6 +1076,17 @@ void Compositor::MaybeUpdateObserveBeginFrame() {
        host_begin_frame_observer_->GetBoundRemote());
  }
  
@@ -45,7 +52,9 @@ index a63fea66e8fa675fb23b0cc2cb2bf63a18a11f94..76be1ae3f1f9981acc8062b831e6bb2b
 +  if (display_private_) {
 +    // Invisible display is throttling itself.
 +    display_private_->SetDisplayVisible(
-+        background_throttling_ ? host_->IsVisible() : true);
++        host_->IsVisible() || !background_throttling_
++            ? viz::mojom::DisplayVisibility::kVisible
++            : viz::mojom::DisplayVisibility::kInvisible);
 +  }
 +}
 +
@@ -53,10 +62,10 @@ index a63fea66e8fa675fb23b0cc2cb2bf63a18a11f94..76be1ae3f1f9981acc8062b831e6bb2b
  void Compositor::SetSeamlessRefreshRates(
      const std::vector<float>& seamless_refresh_rates) {
 diff --git a/ui/compositor/compositor.h b/ui/compositor/compositor.h
-index 8d37f968825055d1d86da2cf0aac5d011fef7e8c..26ddb952b8473ff549d7af969156c78117277bd1 100644
+index 12b9261ca465d7f7293a4941cfde9719f6d97135..8d2e633bba4231cfdfa4cfe198ce6f58411b8d03 100644
 --- a/ui/compositor/compositor.h
 +++ b/ui/compositor/compositor.h
-@@ -515,6 +515,10 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+@@ -505,6 +505,10 @@ class COMPOSITOR_EXPORT Compositor
  
    const cc::LayerTreeSettings& GetLayerTreeSettings() const;
  
@@ -67,7 +76,7 @@ index 8d37f968825055d1d86da2cf0aac5d011fef7e8c..26ddb952b8473ff549d7af969156c781
    size_t saved_events_metrics_count_for_testing() const {
      return host_->saved_events_metrics_count_for_testing();
    }
-@@ -725,6 +729,12 @@ class COMPOSITOR_EXPORT Compositor : public base::PowerSuspendObserver,
+@@ -719,6 +723,12 @@ class COMPOSITOR_EXPORT Compositor
    // See go/report-ux-metrics-at-painting for details.
    bool animation_started_ = false;
  

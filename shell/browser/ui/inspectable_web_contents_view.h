@@ -6,14 +6,19 @@
 #ifndef ELECTRON_SHELL_BROWSER_UI_INSPECTABLE_WEB_CONTENTS_VIEW_H_
 #define ELECTRON_SHELL_BROWSER_UI_INSPECTABLE_WEB_CONTENTS_VIEW_H_
 
+#include <memory>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/devtools/devtools_contents_resizing_strategy.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/view.h"
 
 class DevToolsContentsResizingStrategy;
+
+namespace content {
+struct ContextMenuParams;
+}  // namespace content
 
 namespace gfx {
 class RoundedCornersF;
@@ -27,6 +32,7 @@ class WidgetDelegate;
 
 namespace electron {
 
+class DevToolsContextMenu;
 class InspectableWebContents;
 class InspectableWebContentsViewDelegate;
 
@@ -49,6 +55,7 @@ class InspectableWebContentsView : public views::View {
   void SetCornerRadii(const gfx::RoundedCornersF& corner_radii);
 
   void ShowDevTools(bool activate);
+  void ActivateDevTools();
   void CloseDevTools();
   bool IsDevToolsViewShowing();
   bool IsDevToolsViewFocused();
@@ -58,11 +65,18 @@ class InspectableWebContentsView : public views::View {
   void SetTitle(const std::u16string& title);
   const std::u16string GetTitle();
 
+  // Shows a native context menu for the DevTools frontend, anchored to
+  // whichever widget hosts the DevTools view (the detached DevTools window
+  // when undocked, otherwise the window containing this view).
+  void ShowDevToolsContextMenu(const content::ContextMenuParams& params);
+
   // views::View:
   void Layout(PassKey) override;
 
- private:
   views::View* GetContentsView() const;
+
+ private:
+  void SetContentsViewBounds(const gfx::Rect& bounds);
 
   // Owns us.
   raw_ptr<InspectableWebContents> inspectable_web_contents_;
@@ -75,6 +89,9 @@ class InspectableWebContentsView : public views::View {
   raw_ptr<views::WebView> contents_web_view_ = nullptr;
   raw_ptr<views::View> no_contents_view_ = nullptr;
   raw_ptr<views::WebView> devtools_web_view_ = nullptr;
+
+  // The currently showing (or most recently closed) DevTools context menu.
+  std::unique_ptr<DevToolsContextMenu> context_menu_;
 
   DevToolsContentsResizingStrategy strategy_;
   bool devtools_visible_ = false;

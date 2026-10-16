@@ -10,12 +10,8 @@
 #include "gin/wrappable.h"
 #include "shell/browser/auto_updater.h"
 #include "shell/browser/event_emitter_mixin.h"
+#include "shell/browser/microtasks_runner.h"
 #include "shell/browser/window_list_observer.h"
-
-namespace gin {
-template <typename T>
-class Handle;
-}  // namespace gin
 
 namespace electron::api {
 
@@ -24,22 +20,27 @@ class AutoUpdater final : public gin::Wrappable<AutoUpdater>,
                           public auto_updater::Delegate,
                           private WindowListObserver {
  public:
-  static gin::Handle<AutoUpdater> Create(v8::Isolate* isolate);
+  static AutoUpdater* Create(v8::Isolate* isolate);
 
   // gin::Wrappable
-  static gin::WrapperInfo kWrapperInfo;
+  static const gin::WrapperInfo kWrapperInfo;
+  const gin::WrapperInfo* wrapper_info() const override;
+  const char* GetHumanReadableName() const override;
   gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
       v8::Isolate* isolate) override;
-  const char* GetTypeName() override;
+  const char* GetClassName() const { return "AutoUpdater"; }
+
+  void OnBeforeMicrotasksRunnerDispose();
+
+  // Make public for cppgc::MakeGarbageCollected.
+  explicit AutoUpdater(v8::Isolate* isolate);
+  ~AutoUpdater() override;
 
   // disable copy
   AutoUpdater(const AutoUpdater&) = delete;
   AutoUpdater& operator=(const AutoUpdater&) = delete;
 
- protected:
-  AutoUpdater();
-  ~AutoUpdater() override;
-
+ private:
   // auto_updater::Delegate:
   void OnError(const std::string& message) override;
   void OnError(const std::string& message,
@@ -56,7 +57,6 @@ class AutoUpdater final : public gin::Wrappable<AutoUpdater>,
   // WindowListObserver:
   void OnWindowAllClosed() override;
 
- private:
   std::string GetFeedURL();
   void QuitAndInstall();
 };

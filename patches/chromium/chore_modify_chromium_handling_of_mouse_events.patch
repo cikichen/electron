@@ -5,13 +5,13 @@ Subject: chore: modify chromium handling of mouse events
 
 This patch does the following:
 
-1. When Windows Control Overlay is enabled, it allows chromium to handle synthetic mouse events generated for touch
+1. When Window Control Overlay is enabled, it allows chromium to handle synthetic mouse events generated for touch
 actions in the non-client caption area.
 2. It calls HandleMouseEvent on the delegate earlier in HandleMouseEventInternal, so that Electron can selectively disable
 draggable regions to allow events to propagate to the underlying renderer.
 
 diff --git a/ui/events/event.h b/ui/events/event.h
-index 2dc44d4787d5198cff7be2cf98ad5acf2d3a9a0b..27a0335aac2bd4239616cf71f5d015c931db2294 100644
+index cc3f9bc9383f8272a5cd95b1f2ac56529d86e493..5ca29b84cdaf42ef516ef819ae32b230258b034f 100644
 --- a/ui/events/event.h
 +++ b/ui/events/event.h
 @@ -588,6 +588,9 @@ class EVENTS_EXPORT MouseEvent : public LocatedEvent {
@@ -24,7 +24,7 @@ index 2dc44d4787d5198cff7be2cf98ad5acf2d3a9a0b..27a0335aac2bd4239616cf71f5d015c9
    // Event:
    std::string ToString() const override;
    std::unique_ptr<Event> Clone() const override;
-@@ -620,6 +623,8 @@ class EVENTS_EXPORT MouseEvent : public LocatedEvent {
+@@ -617,6 +620,8 @@ class EVENTS_EXPORT MouseEvent : public LocatedEvent {
  
    // Structure for holding pointer details for implementing PointerEvents API.
    PointerDetails pointer_details_;
@@ -34,10 +34,10 @@ index 2dc44d4787d5198cff7be2cf98ad5acf2d3a9a0b..27a0335aac2bd4239616cf71f5d015c9
  
  class ScrollEvent;
 diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
-index 4cd6e6b9e1b7669314b6731f07b237f161c84fcc..d9890692f7a9e30ac0da244a62c45835177296c9 100644
+index 3ad82812da1a1a84aba7b42d9864505a42cf45ce..019956c806c8744c801ede6000b9d7b69043cd07 100644
 --- a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
 +++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
-@@ -1327,6 +1327,10 @@ HBRUSH DesktopWindowTreeHostWin::GetBackgroundPaintBrush() {
+@@ -1584,6 +1584,10 @@ HBRUSH DesktopWindowTreeHostWin::GetBackgroundPaintBrush() {
    return background_paint_brush_;
  }
  
@@ -49,10 +49,10 @@ index 4cd6e6b9e1b7669314b6731f07b237f161c84fcc..d9890692f7a9e30ac0da244a62c45835
  DesktopWindowTreeHostWin::GetSingletonDesktopNativeCursorManager() {
    return new DesktopNativeCursorManagerWin();
 diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.h b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.h
-index ca92a9a815f646a5628acbb736dfc96b0e8d4c9e..071e5682da9558e721fa32f168a239c16a459a08 100644
+index ae1ac5976e3beca9465545b0b168503a55486621..f9c940c60010645ee0e1d0838efe395defea53bb 100644
 --- a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.h
 +++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.h
-@@ -273,6 +273,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
+@@ -279,6 +279,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostWin
    void HandleWindowScaleFactorChanged(float window_scale_factor) override;
    void HandleHeadlessWindowBoundsChanged(const gfx::Rect& bounds) override;
    HBRUSH GetBackgroundPaintBrush() override;
@@ -61,10 +61,10 @@ index ca92a9a815f646a5628acbb736dfc96b0e8d4c9e..071e5682da9558e721fa32f168a239c1
    Widget* GetWidget();
    const Widget* GetWidget() const;
 diff --git a/ui/views/win/hwnd_message_handler.cc b/ui/views/win/hwnd_message_handler.cc
-index 4d657ba98c87679a7397c8a3ff14d61073eb29af..0f1f6b5fcd8ba81a086efd9dca899f3c6de87a72 100644
+index 4715a7d9f2e845f9ffc8e84a6d7dc4a9d3483393..513a4a0942a4bd1372034f4f94129c8a1b4d6418 100644
 --- a/ui/views/win/hwnd_message_handler.cc
 +++ b/ui/views/win/hwnd_message_handler.cc
-@@ -3174,15 +3174,19 @@ LRESULT HWNDMessageHandler::HandleMouseEventInternal(UINT message,
+@@ -3362,15 +3362,19 @@ LRESULT HWNDMessageHandler::HandleMouseEventInternal(UINT message,
      }
      // We must let Windows handle the caption buttons if it's drawing them, or
      // they won't work.
@@ -86,38 +86,38 @@ index 4d657ba98c87679a7397c8a3ff14d61073eb29af..0f1f6b5fcd8ba81a086efd9dca899f3c
        return 0;
      }
    }
-@@ -3205,6 +3209,7 @@ LRESULT HWNDMessageHandler::HandleMouseEventInternal(UINT message,
+@@ -3393,6 +3397,7 @@ LRESULT HWNDMessageHandler::HandleMouseEventInternal(UINT message,
      // handle alt-space, or in the frame itself.
      is_right_mouse_pressed_on_caption_ = false;
-     ReleaseCapture();
+     ::ReleaseCapture();
 +
      // |point| is in window coordinates, but WM_NCHITTEST and TrackPopupMenu()
      // expect screen coordinates.
      POINT screen_point = CR_POINT_INITIALIZER_FROM_LPARAM(l_param);
-@@ -3212,7 +3217,17 @@ LRESULT HWNDMessageHandler::HandleMouseEventInternal(UINT message,
-     w_param = static_cast<WPARAM>(SendMessage(
+@@ -3401,7 +3406,17 @@ LRESULT HWNDMessageHandler::HandleMouseEventInternal(UINT message,
          hwnd(), WM_NCHITTEST, 0, MAKELPARAM(screen_point.x, screen_point.y)));
      if (w_param == HTCAPTION || w_param == HTSYSMENU) {
--      ShowSystemMenuAtScreenPixelLocation(hwnd(), gfx::Point(screen_point));
-+      LONG message_time = GetMessageTime();
-+      CHROME_MSG msg = {hwnd(),
-+                        message,
-+                        w_param,
-+                        l_param,
-+                        static_cast<DWORD>(message_time),
-+                        {CR_GET_X_LPARAM(l_param), CR_GET_Y_LPARAM(l_param)}};
-+      ui::MouseEvent event(msg);
-+      event.set_is_system_menu(true);
-+      if (!delegate_->HandleMouseEvent(&event))
-+        ShowSystemMenuAtScreenPixelLocation(hwnd(), gfx::Point(screen_point));
-       return 0;
-     }
-   } else if (message == WM_NCLBUTTONDOWN &&
+       if (delegate_->UsesNativeSystemMenu()) {
+-        ShowSystemMenuAtScreenPixelLocation(hwnd(), gfx::Point(screen_point));
++        LONG message_time = GetMessageTime();
++        CHROME_MSG msg = {hwnd(),
++                          message,
++                          w_param,
++                          l_param,
++                          static_cast<DWORD>(message_time),
++                          {CR_GET_X_LPARAM(l_param), CR_GET_Y_LPARAM(l_param)}};
++        ui::MouseEvent event(msg);
++        event.set_is_system_menu(true);
++        if (!delegate_->HandleMouseEvent(&event))
++          ShowSystemMenuAtScreenPixelLocation(hwnd(), gfx::Point(screen_point));
+       } else {
+         delegate_->ShowCustomSystemMenu(gfx::Point(screen_point));
+       }
 diff --git a/ui/views/win/hwnd_message_handler_delegate.h b/ui/views/win/hwnd_message_handler_delegate.h
-index 780b1b217fc25b6dfdee75f2e9de3944e087fa10..0b3a9b282f8137f238c9462a5661f8b7d5a5168e 100644
+index be3ec89c4e0145d9c3c26e024a46be01f46465c4..5d30b432ab4358428afdd5f93826c7044dba1049 100644
 --- a/ui/views/win/hwnd_message_handler_delegate.h
 +++ b/ui/views/win/hwnd_message_handler_delegate.h
-@@ -259,6 +259,10 @@ class VIEWS_EXPORT HWNDMessageHandlerDelegate {
+@@ -264,6 +264,10 @@ class VIEWS_EXPORT HWNDMessageHandlerDelegate {
    // if the default should be used.
    virtual HBRUSH GetBackgroundPaintBrush() = 0;
  

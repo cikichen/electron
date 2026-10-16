@@ -4,28 +4,12 @@
 
 #include "shell/common/gin_helper/wrappable.h"
 
-#include "gin/public/isolate_holder.h"
+#include "base/task/sequenced_task_runner.h"
+#include "shell/common/gin_helper/cleaned_up_at_exit.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "v8/include/v8-function.h"
 
 namespace gin_helper {
-
-bool IsValidWrappable(const v8::Local<v8::Value>& val,
-                      const gin::WrapperInfo* wrapper_info) {
-  if (!val->IsObject())
-    return false;
-
-  v8::Local<v8::Object> port = val.As<v8::Object>();
-  if (port->InternalFieldCount() != gin::kNumberOfInternalFields)
-    return false;
-
-  const gin::WrapperInfo* info = static_cast<gin::WrapperInfo*>(
-      port->GetAlignedPointerFromInternalField(gin::kWrapperInfoIndex));
-  if (info != wrapper_info)
-    return false;
-
-  return true;
-}
 
 WrappableBase::WrappableBase() = default;
 
@@ -34,7 +18,8 @@ WrappableBase::~WrappableBase() {
     return;
 
   v8::HandleScope scope(isolate());
-  GetWrapper()->SetAlignedPointerInInternalField(0, nullptr);
+  GetWrapper()->SetAlignedPointerInInternalField(
+      0, nullptr, v8::kEmbedderDataTypeTagDefault);
   wrapper_.ClearWeak();
   wrapper_.Reset();
 }
@@ -46,7 +31,7 @@ v8::Local<v8::Object> WrappableBase::GetWrapper() const {
     return {};
 }
 
-void WrappableBase::InitWithArgs(gin::Arguments* args) {
+void WrappableBase::InitWithArgs(const gin::Arguments* const args) {
   v8::Local<v8::Object> holder;
   args->GetHolder(&holder);
   InitWith(args->isolate(), holder);
@@ -56,10 +41,13 @@ void WrappableBase::InitWith(v8::Isolate* isolate,
                              v8::Local<v8::Object> wrapper) {
   CHECK(wrapper_.IsEmpty());
   isolate_ = isolate;
-  wrapper->SetAlignedPointerInInternalField(0, this);
+  wrapper->SetAlignedPointerInInternalField(0, this,
+                                            v8::kEmbedderDataTypeTagDefault);
   wrapper_.Reset(isolate, wrapper);
   wrapper_.SetWeak(this, FirstWeakCallback,
                    v8::WeakCallbackType::kInternalFields);
+
+  OnWrapped(isolate);
 
   // Call object._init if we have one.
   v8::Local<v8::Function> init;
@@ -82,10 +70,25 @@ void WrappableBase::FirstWeakCallback(
 // static
 void WrappableBase::SecondWeakCallback(
     const v8::WeakCallbackInfo<WrappableBase>& data) {
-  if (gin::IsolateHolder::DestroyedMicrotasksRunner()) {
+  if (CleanedUpAtExit::DidStartCleanup()) {
     return;
   }
-  delete static_cast<WrappableBase*>(data.GetInternalField(0));
+  // Defer destruction to a posted task. V8's second-pass weak callbacks run
+  // inside a DisallowJavascriptExecutionScope (they may touch the V8 API but
+  // must not invoke JS). Several Electron Wrappables (e.g. WebContents) emit
+  // JS events from their destructors, so deleting synchronously here can
+  // crash with "Invoke in DisallowJavascriptExecutionScope" — see
+  // https://github.com/electron/electron/issues/47420. Posting via the
+  // current sequence's task runner ensures the destructor runs once V8 has
+  // left the GC scope. If no task runner is available (e.g. early/late in
+  // process lifetime), fall back to synchronous deletion.
+  auto* wrappable = static_cast<WrappableBase*>(data.GetInternalField(0));
+  if (base::SequencedTaskRunner::HasCurrentDefault()) {
+    base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE,
+                                                               wrappable);
+  } else {
+    delete wrappable;
+  }
 }
 
 namespace internal {
@@ -96,7 +99,8 @@ void* FromV8Impl(v8::Isolate* isolate, v8::Local<v8::Value> val) {
   v8::Local<v8::Object> obj = val.As<v8::Object>();
   if (obj->InternalFieldCount() != 1)
     return nullptr;
-  return obj->GetAlignedPointerFromInternalField(0);
+  return obj->GetAlignedPointerFromInternalField(
+      0, v8::kEmbedderDataTypeTagDefault);
 }
 
 }  // namespace internal

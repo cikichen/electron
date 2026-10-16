@@ -14,7 +14,7 @@ console.log(systemPreferences.getEffectiveAppearance())
 
 The `systemPreferences` object emits the following events:
 
-### Event: 'accent-color-changed' _Windows_
+### Event: 'accent-color-changed' _Windows_ _Linux_
 
 Returns:
 
@@ -182,7 +182,7 @@ Some popular `key` and `type`s are:
 Removes the `key` in `NSUserDefaults`. This can be used to restore the default
 or global value of a `key` previously set with `setUserDefault`.
 
-### `systemPreferences.getAccentColor()` _Windows_ _macOS_
+### `systemPreferences.getAccentColor()`
 
 Returns `string` - The users current system wide accent color preference in RGBA
 hexadecimal form.
@@ -320,11 +320,14 @@ Returns `Promise<void>` - resolves if the user has successfully authenticated wi
 ```js
 const { systemPreferences } = require('electron')
 
-systemPreferences.promptTouchID('To get consent for a Security-Gated Thing').then(success => {
-  console.log('You have successfully authenticated with Touch ID!')
-}).catch(err => {
-  console.log(err)
-})
+systemPreferences
+  .promptTouchID('To get consent for a Security-Gated Thing')
+  .then((success) => {
+    console.log('You have successfully authenticated with Touch ID!')
+  })
+  .catch((err) => {
+    console.log(err)
+  })
 ```
 
 This API itself will not protect your user data; rather, it is a mechanism to allow you to do so. Native apps will need to set [Access Control Constants](https://developer.apple.com/documentation/security/secaccesscontrolcreateflags?language=objc) like [`kSecAccessControlUserPresence`](https://developer.apple.com/documentation/security/secaccesscontrolcreateflags/ksecaccesscontroluserpresence?language=objc) on their keychain entry so that reading it would auto-prompt for Touch ID biometric consent. This could be done with [`node-keytar`](https://github.com/atom/node-keytar), such that one would store an encryption key with `node-keytar` and only fetch it if `promptTouchID()` resolves.

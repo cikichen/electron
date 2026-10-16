@@ -7,10 +7,10 @@ Subject: build: ensure native module compilation fails if not using a new
 This should not be upstreamed, it is a quality-of-life patch for downstream module builders.
 
 diff --git a/common.gypi b/common.gypi
-index d9c0b721fe0a629a30efb3c4e04905176ca0a7f5..f3476a91e4c3cda7cecf49e07bb594a167ac46ef 100644
+index bc690955d3da82216abfe73c92d5ec9c2dbaa784..00b5cea77e949befd234a474a7f109ba47d24d8b 100644
 --- a/common.gypi
 +++ b/common.gypi
-@@ -88,6 +88,8 @@
+@@ -96,6 +96,8 @@
      'v8_use_perfetto': 0,
      'tsan%': 0,
  
@@ -18,16 +18,18 @@ index d9c0b721fe0a629a30efb3c4e04905176ca0a7f5..f3476a91e4c3cda7cecf49e07bb594a1
 +
      ##### end V8 defaults #####
  
-     # When building native modules using 'npm install' with the system npm,
-@@ -293,6 +295,7 @@
-     # Defines these mostly for node-gyp to pickup.
-     'defines': [
+     'conditions': [
+@@ -347,7 +349,8 @@
        '_GLIBCXX_USE_CXX11_ABI=1',
+       # This help forks when building Node.js on a 32-bit arch as
+       # libuv is always compiled with _FILE_OFFSET_BITS=64
+-      '_FILE_OFFSET_BITS=64'
++      '_FILE_OFFSET_BITS=64',
 +      'ELECTRON_ENSURE_CONFIG_GYPI',
      ],
  
      # Forcibly disable -Werror.  We support a wide range of compilers, it's
-@@ -449,6 +452,11 @@
+@@ -504,6 +507,11 @@
            }],
          ],
        }],
@@ -38,21 +40,21 @@ index d9c0b721fe0a629a30efb3c4e04905176ca0a7f5..f3476a91e4c3cda7cecf49e07bb594a1
 +      }],
        # The defines bellow must include all things from the external_v8_defines
        # list in v8/BUILD.gn.
-       ['v8_enable_v8_checks == 1', {
+       ['node_enable_experimentals == "true"', {
 diff --git a/configure.py b/configure.py
-index 932484674e5b15b765b8bfe307bdf99b49b5039f..befaa85527b9ebebad226e603586e23d04ec1e51 100755
+index 1b35f195f7ee7547544cc954baf95c725afa8d0b..172aef2c5194574eb298462588ecf76ae2a2e366 100755
 --- a/configure.py
 +++ b/configure.py
-@@ -1698,6 +1698,7 @@ def configure_library(lib, output, pkgname=None):
+@@ -1930,6 +1930,7 @@ def configure_library(lib, output, pkgname=None):
  def configure_v8(o, configs):
-   set_configuration_variable(configs, 'v8_enable_v8_checks', release=1, debug=0)
+   set_configuration_variable(configs, 'v8_enable_v8_checks', release=0, debug=1)
  
 +  o['variables']['using_electron_config_gypi'] = 1
    o['variables']['v8_enable_webassembly'] = 0 if options.v8_lite_mode else 1
    o['variables']['v8_enable_javascript_promise_hooks'] = 1
    o['variables']['v8_enable_lite_mode'] = 1 if options.v8_lite_mode else 0
 diff --git a/src/node.h b/src/node.h
-index 835c78145956de3d8c52b6cc0581bcfef600f90b..174fd4d1af4c8cd75aec09f4548a674fd5539fb2 100644
+index 9f9ba48eb8e2ffcac85dd2147fe631204f2a604e..cba83119bfaf88b360b2f1220611a0c642ec7364 100644
 --- a/src/node.h
 +++ b/src/node.h
 @@ -22,6 +22,12 @@

@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "shell/browser/javascript_environment.h"
 #include "shell/browser/ui/certificate_trust.h"
 #include "shell/browser/ui/file_dialog.h"
 #include "shell/browser/ui/message_box.h"
@@ -41,9 +42,8 @@ void ResolvePromiseObject(gin_helper::Promise<gin_helper::Dictionary> promise,
 }
 
 v8::Local<v8::Promise> ShowMessageBox(
-    const electron::MessageBoxSettings& settings,
-    gin::Arguments* args) {
-  v8::Isolate* isolate = args->isolate();
+    v8::Isolate* const isolate,
+    const electron::MessageBoxSettings& settings) {
   gin_helper::Promise<gin_helper::Dictionary> promise(isolate);
   v8::Local<v8::Promise> handle = promise.GetHandle();
 
@@ -61,9 +61,9 @@ void ShowOpenDialogSync(const file_dialog::DialogSettings& settings,
 }
 
 v8::Local<v8::Promise> ShowOpenDialog(
-    const file_dialog::DialogSettings& settings,
-    gin::Arguments* args) {
-  gin_helper::Promise<gin_helper::Dictionary> promise(args->isolate());
+    v8::Isolate* const isolate,
+    const file_dialog::DialogSettings& settings) {
+  gin_helper::Promise<gin_helper::Dictionary> promise{isolate};
   v8::Local<v8::Promise> handle = promise.GetHandle();
   file_dialog::ShowOpenDialog(settings, std::move(promise));
   return handle;
@@ -89,19 +89,19 @@ void Initialize(v8::Local<v8::Object> exports,
                 v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context,
                 void* priv) {
-  v8::Isolate* isolate = context->GetIsolate();
-  gin_helper::Dictionary dict(isolate, exports);
-  dict.SetMethod("showMessageBoxSync", &ShowMessageBoxSync);
-  dict.SetMethod("showMessageBox", &ShowMessageBox);
-  dict.SetMethod("_closeMessageBox", &electron::CloseMessageBox);
-  dict.SetMethod("showErrorBox", &electron::ShowErrorBox);
-  dict.SetMethod("showOpenDialogSync", &ShowOpenDialogSync);
-  dict.SetMethod("showOpenDialog", &ShowOpenDialog);
-  dict.SetMethod("showSaveDialogSync", &ShowSaveDialogSync);
-  dict.SetMethod("showSaveDialog", &ShowSaveDialog);
+  v8::Isolate* const isolate = electron::JavascriptEnvironment::GetIsolate();
+  gin_helper::Dictionary dict{isolate, exports};
+  dict.SetMethod<&ShowMessageBoxSync>("showMessageBoxSync");
+  dict.SetMethod<&ShowMessageBox>("showMessageBox");
+  dict.SetMethod<&electron::CloseMessageBox>("_closeMessageBox");
+  dict.SetMethod<&electron::ShowErrorBox>("showErrorBox");
+  dict.SetMethod<&ShowOpenDialogSync>("showOpenDialogSync");
+  dict.SetMethod<&ShowOpenDialog>("showOpenDialog");
+  dict.SetMethod<&ShowSaveDialogSync>("showSaveDialogSync");
+  dict.SetMethod<&ShowSaveDialog>("showSaveDialog");
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-  dict.SetMethod("showCertificateTrustDialog",
-                 &certificate_trust::ShowCertificateTrust);
+  dict.SetMethod<&certificate_trust::ShowCertificateTrust>(
+      "showCertificateTrustDialog");
 #endif
 }
 

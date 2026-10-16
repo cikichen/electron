@@ -18,12 +18,11 @@
 #include "base/strings/sys_string_conversions.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "components/remote_cocoa/browser/scoped_cg_window_id.h"
-#include "content/public/browser/browser_accessibility_state.h"
-#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/desktop_media_id.h"
 #include "shell/browser/browser.h"
 #include "shell/browser/javascript_environment.h"
+#include "shell/browser/native_window_mac_remote.h"
 #include "shell/browser/ui/cocoa/electron_native_widget_mac.h"
 #include "shell/browser/ui/cocoa/electron_ns_panel.h"
 #include "shell/browser/ui/cocoa/electron_ns_window.h"
@@ -33,6 +32,7 @@
 #include "shell/browser/ui/cocoa/root_view_mac.h"
 #include "shell/browser/ui/cocoa/window_buttons_proxy.h"
 #include "shell/browser/ui/drag_util.h"
+#include "shell/browser/ui/views/content_view_targeter_delegate.h"
 #include "shell/browser/window_list.h"
 #include "shell/common/gin_converters/gfx_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
@@ -42,9 +42,10 @@
 #include "third_party/webrtc/modules/desktop_capture/mac/window_list_utils.h"
 #include "ui/base/hit_test.h"
 #include "ui/display/screen.h"
-#include "ui/gl/gpu_switching_manager.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/views/background.h"
 #include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
+#include "ui/views/view_targeter.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/native_frame_view_mac.h"
 
@@ -114,11 +115,15 @@ struct Converter<electron::NativeWindowMac::VisualEffectState> {
 
 namespace electron {
 
-NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
+NativeWindowMac::~NativeWindowMac() = default;
+
+NativeWindowMac::NativeWindowMac(const int32_t base_window_id,
+                                 const gin_helper::Dictionary& options,
                                  NativeWindow* parent)
-    : NativeWindow(options, parent), root_view_(new RootViewMac(this)) {
+    : NativeWindow{base_window_id, options, parent},
+      root_view_(new RootViewMac(this)) {
   ui::NativeTheme::GetInstanceForNativeUi()->AddObserver(this);
-  display::Screen::GetScreen()->AddObserver(this);
+  display::Screen::Get()->AddObserver(this);
 
   int width = options.ValueOrDefault(options::kWidth, 800);
   int height = options.ValueOrDefault(options::kHeight, 600);
@@ -153,13 +158,6 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
       options.ValueOrDefault(options::kPaintWhenInitiallyHidden, true);
 
   NSUInteger styleMask = NSWindowStyleMaskTitled;
-
-  // The NSWindowStyleMaskFullSizeContentView style removes rounded corners
-  // for frameless window.
-  const bool rounded_corner =
-      options.ValueOrDefault(options::kRoundedCorners, true);
-  if (!rounded_corner && !has_frame())
-    styleMask = NSWindowStyleMaskBorderless;
 
   if (minimizable)
     styleMask |= NSWindowStyleMaskMiniaturizable;
@@ -220,6 +218,11 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
     SetParentWindow(parent);
   }
 
+  const bool rounded_corner =
+      options.ValueOrDefault(options::kRoundedCorners, true);
+  if (!rounded_corner && !has_frame())
+    SetBorderless(!rounded_corner);
+
   if (transparent()) {
     // Setting the background color to clear will also hide the shadow.
     [window_ setBackgroundColor:[NSColor clearColor]];
@@ -237,8 +240,7 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
     [window_ setLevel:NSFloatingWindowLevel];
   }
 
-  bool focusable;
-  if (options.Get(options::kFocusable, &focusable) && !focusable)
+  if (bool val; options.Get(options::kFocusable, &val) && !val)
     [window_ setDisableKeyOrMainWindow:YES];
 
   if (transparent() || !has_frame()) {
@@ -283,12 +285,10 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
   // NOTE(@mlaurencin) Spec requirements can be found here:
   // https://developer.mozilla.org/en-US/docs/Web/API/Window/open#width
   constexpr int kMinSizeReqdBySpec = 100;
-  int inner_width = 0;
-  int inner_height = 0;
+  const int inner_width = options.ValueOrDefault(options::kinnerWidth, 0);
+  const int inner_height = options.ValueOrDefault(options::kinnerHeight, 0);
   bool use_content_size =
       options.ValueOrDefault(options::kUseContentSize, false);
-  options.Get(options::kinnerWidth, &inner_width);
-  options.Get(options::kinnerHeight, &inner_height);
   if (inner_width || inner_height) {
     use_content_size = true;
     if (inner_width)
@@ -316,7 +316,7 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
   // by calls to other APIs.
   SetMaximizable(maximizable);
 
-  // Default content view.
+  // Default content view (replaced by BaseWindow::SetContentView).
   SetContentView(new views::View());
   AddContentViewLayers();
 
@@ -324,17 +324,26 @@ NativeWindowMac::NativeWindowMac(const gin_helper::Dictionary& options,
   original_level_ = [window_ level];
 }
 
-NativeWindowMac::~NativeWindowMac() = default;
-
 void NativeWindowMac::SetContentView(views::View* view) {
   views::View* root_view = GetContentsView();
-  if (content_view())
-    root_view->RemoveChildView(content_view());
+  if (views::View* old_view = content_view()) {
+    set_content_view(nullptr);
+    if (old_view->owned_by_client())
+      root_view->RemoveChildView(old_view);
+    else
+      root_view->RemoveChildViewT(old_view);
+  }
 
   set_content_view(view);
+
+  // Make content_view_ hit-test-transparent where it has no covering child
+  // so events fall through to the sibling WebContentsView in BrowserWindow.
+  view->SetEventTargeter(std::make_unique<views::ViewTargeter>(
+      std::make_unique<ContentViewTargeterDelegate>()));
+
   root_view->AddChildViewRaw(content_view());
 
-  root_view->DeprecatedLayoutImmediately();
+  FlushPendingRootLayout(root_view);
 }
 
 void NativeWindowMac::Close() {
@@ -352,7 +361,7 @@ void NativeWindowMac::Close() {
   RemoveChildFromParentWindow();
 
   while (!child_windows_.empty()) {
-    auto* child = child_windows_.back();
+    NativeWindow* child = child_windows_.back();
     child->RemoveChildFromParentWindow();
   }
 
@@ -361,8 +370,8 @@ void NativeWindowMac::Close() {
   // even after the user has ended the sheet.
   // Ensure it's closed before calling [window_ performClose:nil].
   // If multiple sheets are open, they must all be closed.
-  while ([window_ attachedSheet]) {
-    [window_ endSheet:[window_ attachedSheet]];
+  while (NSWindow* sheet = [window_ attachedSheet]) {
+    [window_ endSheet:sheet];
   }
   DCHECK_EQ([[window_ sheets] count], 0UL);
 
@@ -383,7 +392,7 @@ void NativeWindowMac::CloseImmediately() {
   RemoveChildFromParentWindow();
 
   while (!child_windows_.empty()) {
-    auto* child = child_windows_.back();
+    NativeWindow* child = child_windows_.back();
     child->RemoveChildFromParentWindow();
   }
 
@@ -421,6 +430,8 @@ void NativeWindowMac::Show() {
     return;
   }
 
+  FlushPendingDisplayMode();
+
   set_wants_to_be_visible(true);
 
   // Reattach the window to the parent to actually show it.
@@ -435,6 +446,8 @@ void NativeWindowMac::Show() {
 }
 
 void NativeWindowMac::ShowInactive() {
+  FlushPendingDisplayMode();
+
   set_wants_to_be_visible(true);
 
   // Reattach the window to the parent to actually show it.
@@ -454,8 +467,8 @@ void NativeWindowMac::Hide() {
   // If a sheet is attached to the window when we call [window_ orderOut:nil],
   // the sheet won't be able to show again on the same window.
   // Ensure it's closed before calling [window_ orderOut:nil].
-  if ([window_ attachedSheet])
-    [window_ endSheet:[window_ attachedSheet]];
+  if (NSWindow* sheet = [window_ attachedSheet])
+    [window_ endSheet:sheet];
 
   if (is_modal() && parent()) {
     [window_ orderOut:nil];
@@ -501,8 +514,8 @@ void NativeWindowMac::SetEnabled(bool enable) {
           NSLog(@"main window disabled");
           return;
         }];
-  } else if ([window_ attachedSheet]) {
-    [window_ endSheet:[window_ attachedSheet]];
+  } else if (NSWindow* sheet = [window_ attachedSheet]) {
+    [window_ endSheet:sheet];
   }
 }
 
@@ -605,7 +618,7 @@ void NativeWindowMac::RemoveChildFromParentWindow() {
 }
 
 void NativeWindowMac::AttachChildren() {
-  for (auto* child : child_windows_) {
+  for (NativeWindow* child : child_windows_) {
     if (!static_cast<NativeWindowMac*>(child)->wants_to_be_visible())
       continue;
 
@@ -625,7 +638,7 @@ void NativeWindowMac::DetachChildren() {
   // Hide all children before hiding/minimizing the window.
   // NativeWidgetNSWindowBridge::NotifyVisibilityChangeDown()
   // will DCHECK otherwise.
-  for (auto* child : child_windows_) {
+  for (NativeWindow* child : child_windows_) {
     [child->GetNativeWindow().GetNativeNSWindow() orderOut:nil];
   }
 }
@@ -769,6 +782,11 @@ bool NativeWindowMac::MoveAbove(const std::string& sourceId) {
 
 void NativeWindowMac::MoveTop() {
   [window_ orderWindowByShuffling:NSWindowAbove relativeTo:0];
+}
+
+void NativeWindowMac::SetBorderless(bool borderless) {
+  SetStyleMask(!borderless, NSWindowStyleMaskTitled);
+  SetStyleMask(borderless, NSWindowStyleMaskBorderless);
 }
 
 void NativeWindowMac::SetResizable(bool resizable) {
@@ -922,10 +940,9 @@ void NativeWindowMac::SetWindowLevel(int unbounded_level) {
   // a bug of Cocoa or macOS.
   SetMaximizable(was_maximizable_);
 
-  // This must be notified at the very end or IsAlwaysOnTop
-  // will not yet have been updated to reflect the new status
   if (did_z_order_level_change)
-    NativeWindow::NotifyWindowAlwaysOnTopChanged();
+    NativeWindow::NotifyWindowAlwaysOnTopChanged(z_order_level !=
+                                                 ui::ZOrderLevel::kNormal);
 }
 
 ui::ZOrderLevel NativeWindowMac::GetZOrderLevel() const {
@@ -1125,8 +1142,7 @@ void NativeWindowMac::InvalidateShadow() {
 }
 
 void NativeWindowMac::SetOpacity(const double opacity) {
-  const double boundedOpacity = std::clamp(opacity, 0.0, 1.0);
-  [window_ setAlphaValue:boundedOpacity];
+  [window_ setAlphaValue:ClampOpacity(opacity)];
 }
 
 double NativeWindowMac::GetOpacity() const {
@@ -1308,46 +1324,31 @@ void NativeWindowMac::UpdateVibrancyRadii(bool fullscreen) {
 
   if (vibrantView != nil && !vibrancy_type_.empty()) {
     const bool no_rounded_corner = !HasStyleMask(NSWindowStyleMaskTitled);
-    const int macos_version = base::mac::MacOSMajorVersion();
-    const bool modal = is_modal();
 
-    // If the window is modal, its corners are rounded on macOS >= 11 or higher
-    // unless the user has explicitly passed noRoundedCorners.
-    bool should_round_modal =
-        !no_rounded_corner && macos_version >= 11 && modal;
+    // If the window is modal, its corners are rounded unless
+    // the user has explicitly passed |roundedCorners: false|.
+    bool should_round_modal = !no_rounded_corner && is_modal();
     // If the window is nonmodal, its corners are rounded if it is frameless and
-    // the user hasn't passed noRoundedCorners.
-    bool should_round_nonmodal = !no_rounded_corner && !modal && !has_frame();
+    // the user hasn't passed |roundedCorners: false|.
+    bool should_round_nonmodal =
+        !no_rounded_corner && !is_modal() && !has_frame();
 
     if (should_round_nonmodal || should_round_modal) {
-      CGFloat radius;
-      if (fullscreen) {
-        radius = 0.0f;
-      } else if (macos_version >= 11) {
-        radius = 9.0f;
-      } else {
-        // Smaller corner radius on versions prior to Big Sur.
-        radius = 5.0f;
-      }
-
+      CGFloat radius = fullscreen ? 0.0f : 9.0f;
       CGFloat dimension = 2 * radius + 1;
-      NSSize size = NSMakeSize(dimension, dimension);
-      NSImage* maskImage = [NSImage imageWithSize:size
-                                          flipped:NO
-                                   drawingHandler:^BOOL(NSRect rect) {
-                                     NSBezierPath* bezierPath = [NSBezierPath
-                                         bezierPathWithRoundedRect:rect
-                                                           xRadius:radius
-                                                           yRadius:radius];
-                                     [[NSColor blackColor] set];
-                                     [bezierPath fill];
-                                     return YES;
-                                   }];
+      NSImage* maskImage =
+          [NSImage imageWithSize:NSMakeSize(dimension, dimension)
+                         flipped:NO
+                  drawingHandler:^BOOL(NSRect rect) {
+                    [[NSBezierPath bezierPathWithRoundedRect:rect
+                                                     xRadius:radius
+                                                     yRadius:radius] fill];
+                    return YES;
+                  }];
 
-      [maskImage setCapInsets:NSEdgeInsetsMake(radius, radius, radius, radius)];
-      [maskImage setResizingMode:NSImageResizingModeStretch];
+      maskImage.capInsets = NSEdgeInsetsMake(radius, radius, radius, radius);
+      maskImage.resizingMode = NSImageResizingModeStretch;
       [vibrantView setMaskImage:maskImage];
-      [window_ setCornerMask:maskImage];
     }
   }
 }
@@ -1369,8 +1370,9 @@ void NativeWindowMac::SetVibrancy(const std::string& type, int duration) {
     auto cleanupHandler = ^{
       if (vibrant_native_view_host_ != nullptr) {
         // Transfers ownership back to caller in the form of a unique_ptr which
-        // is subsequently deleted.
-        rootView->RemoveChildViewT(vibrant_native_view_host_);
+        // is deleted after the non-owning pointer has been cleared.
+        auto vibrant_native_view_host =
+            rootView->RemoveChildViewT(vibrant_native_view_host_);
         vibrant_native_view_host_ = nullptr;
       }
 
@@ -1513,6 +1515,18 @@ void NativeWindowMac::RedrawTrafficLights() {
     [buttons_proxy_ redraw];
 }
 
+void NativeWindowMac::HideTrafficLights() {
+  if (buttons_proxy_)
+    [buttons_proxy_ setVisible:NO];
+}
+
+void NativeWindowMac::RestoreTrafficLights() {
+  if (buttons_proxy_ && window_button_visibility_.value_or(true)) {
+    [buttons_proxy_ redraw];
+    [buttons_proxy_ setVisible:YES];
+  }
+}
+
 // In simpleFullScreen mode, update the frame for new bounds.
 void NativeWindowMac::UpdateFrame() {
   NSWindow* window = GetNativeWindow().GetNativeNSWindow();
@@ -1565,6 +1579,10 @@ void NativeWindowMac::ToggleTabBar() {
 }
 
 bool NativeWindowMac::AddTabbedWindow(NativeWindow* window) {
+  // A window in an app shim is another process's: only a stand-in for it is
+  // here.
+  if (window->IsInAppShim())
+    return false;
   if (window_ == window->GetNativeWindow().GetNativeNSWindow()) {
     return false;
   } else {
@@ -1694,46 +1712,30 @@ bool NativeWindowMac::IsActive() const {
 void NativeWindowMac::Cleanup() {
   DCHECK(!IsClosed());
   ui::NativeTheme::GetInstanceForNativeUi()->RemoveObserver(this);
-  display::Screen::GetScreen()->RemoveObserver(this);
+  display::Screen::Get()->RemoveObserver(this);
   [window_ cleanup];
 }
 
-class NativeAppWindowFrameViewMac : public views::NativeFrameViewMac {
- public:
-  NativeAppWindowFrameViewMac(views::Widget* frame, NativeWindowMac* window)
-      : views::NativeFrameViewMac(frame), native_window_(window) {}
+std::unique_ptr<views::FrameView> NativeWindowMac::CreateFrameView(
+    views::Widget* widget) {
+  auto frame_view = std::make_unique<views::NativeFrameViewMac>(widget);
+  frame_view->set_non_client_hit_test_callback(base::BindRepeating(
+      &NativeWindowMac::FrameViewNonClientHitTest, base::Unretained(this)));
+  return frame_view;
+}
 
-  NativeAppWindowFrameViewMac(const NativeAppWindowFrameViewMac&) = delete;
-  NativeAppWindowFrameViewMac& operator=(const NativeAppWindowFrameViewMac&) =
-      delete;
-
-  ~NativeAppWindowFrameViewMac() override = default;
-
-  // NonClientFrameView:
-  int NonClientHitTest(const gfx::Point& point) override {
-    if (!bounds().Contains(point))
-      return HTNOWHERE;
-
-    if (GetWidget()->IsFullscreen())
-      return HTCLIENT;
-
-    // Check for possible draggable region in the client area for the frameless
-    // window.
-    int contents_hit_test = native_window_->NonClientHitTest(point);
-    if (contents_hit_test != HTNOWHERE)
-      return contents_hit_test;
-
+int NativeWindowMac::FrameViewNonClientHitTest(const gfx::Point& point) {
+  if (widget()->IsFullscreen()) {
     return HTCLIENT;
   }
 
- private:
-  // Weak.
-  raw_ptr<NativeWindowMac> const native_window_;
-};
+  // Check for possible draggable region in the client area for the frameless
+  // window.
+  int contents_hit_test = NonClientHitTest(point);
+  if (contents_hit_test != HTNOWHERE)
+    return contents_hit_test;
 
-std::unique_ptr<views::NonClientFrameView>
-NativeWindowMac::CreateNonClientFrameView(views::Widget* widget) {
-  return std::make_unique<NativeAppWindowFrameViewMac>(widget, this);
+  return HTCLIENT;
 }
 
 bool NativeWindowMac::HasStyleMask(NSUInteger flag) const {
@@ -1885,9 +1887,15 @@ void NativeWindowMac::OnWidgetInitialized() {
 
 // static
 std::unique_ptr<NativeWindow> NativeWindow::Create(
+    const int32_t base_window_id,
     const gin_helper::Dictionary& options,
     NativeWindow* parent) {
-  return std::make_unique<NativeWindowMac>(options, parent);
+  if (remote_cocoa::ApplicationHost* application_host =
+          NativeWindowMacRemote::ApplicationHostFromOptions(options)) {
+    return std::make_unique<NativeWindowMacRemote>(base_window_id, options,
+                                                   parent, application_host);
+  }
+  return std::make_unique<NativeWindowMac>(base_window_id, options, parent);
 }
 
 }  // namespace electron

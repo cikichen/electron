@@ -2,6 +2,8 @@
 
 Breaking changes will be documented here, and deprecation warnings added to JS code where possible, at least [one major version](tutorial/electron-versioning.md#semver) before the change is made.
 
+Note that breaking changes listed for future releases are always subject to change.
+
 ### Types of Breaking Changes
 
 This document uses the following convention to categorize breaking changes:
@@ -12,7 +14,863 @@ This document uses the following convention to categorize breaking changes:
 * **Deprecated:** An API was marked as deprecated. The API will continue to function, but will emit a deprecation warning, and will be removed in a future release.
 * **Removed:** An API or feature was removed, and is no longer supported by Electron.
 
-## Planned Breaking API Changes (38.0)
+## Breaking API Changes (46.0)
+
+### Behavior Changed: `utilityProcess` `child.kill()` no longer force-kills the child
+
+`child.kill()` used to send `SIGTERM` and then `SIGKILL` two seconds later if the
+child had not exited. It now matches Node's `child_process.kill()`: it sends
+`SIGTERM` on POSIX (or terminates the process on Windows) and returns, and a
+child that handles `SIGTERM` decides when, or whether, to exit. A child that
+ignores `SIGTERM` is no longer terminated by `kill()`; have it exit from its
+`SIGTERM` handler instead.
+
+### Removed: `safeStorage.isEncryptionAvailable()`, `safeStorage.encryptString()` and `safeStorage.decryptString()`
+
+The synchronous `safeStorage` methods, deprecated in Electron 45, have been
+removed along with Chromium's synchronous OSCrypt backend. Use
+`safeStorage.isAsyncEncryptionAvailable()`, `safeStorage.encryptStringAsync()`
+and `safeStorage.decryptStringAsync()` instead. They use the same per-platform
+key stores, so data encrypted with `safeStorage.encryptString()` by earlier
+versions of Electron decrypts with `safeStorage.decryptStringAsync()`.
+
+### Behavior Changed: captured page images have the page's scale factor
+
+The [`NativeImage`](api/native-image.md) returned by `webContents.capturePage()`
+(and `win.capturePage()` / `<webview>.capturePage()`), passed to the offscreen
+`paint` event, and passed to the `webContents.beginFrameSubscription()`
+callback now has the page's device scale factor. These images used to always
+be marked as 1x, so on a HiDPI display, or with
+`webPreferences.offscreen.deviceScaleFactor`, `image.getSize()` returned pixels.
+It now returns DIPs, and `image.crop()` and `image.resize()` take DIPs. The
+pixel data returned by `toBitmap()`, `toPNG()`, `toJPEG()` and `toDataURL()` is
+unchanged.
+
+```js
+const image = await win.webContents.capturePage()
+const [scaleFactor] = image.getScaleFactors()
+const { width, height } = image.getSize() // DIPs
+console.log(width * scaleFactor, height * scaleFactor) // pixels, as before
+```
+
+### Behavior Changed: workers created by subframes need `nodeIntegrationInSubFrames` for Node.js integration
+
+With `nodeIntegrationInWorker: true`, a `Worker` created from an `<iframe>` in
+the same process as the main frame used to get Node.js integration even though
+the iframe itself had none. Workers now only get Node.js integration when the
+frame that creates them has it: the main frame, or any frame when
+`nodeIntegrationInSubFrames` is enabled.
+
+### Behavior Changed: preload scripts only run in DevTools extension frames hosted by DevTools
+
+A `chrome-extension://` document used to receive the window's preload script
+(and session preload scripts) wherever it was embedded. It now only does so
+when it is a top-level frame or is hosted inside the DevTools front-end (a
+`devtools_page` or panel); an extension frame embedded in an ordinary page is
+treated like any other subframe and follows `nodeIntegrationInSubFrames`.
+
+### Removed: `document.requestStorageAccessFor`
+
+Chromium has removed `document.requestStorageAccessFor` and the
+`top-level-storage-access` permission descriptor. Calling
+`navigator.permissions.query({ name: 'top-level-storage-access' })` now rejects
+with a `TypeError`, and web content can no longer trigger a
+`top-level-storage-access` permission request or check. Setting the
+[`enableBlinkFeatures`](api/structures/web-preferences.md) web preference to
+`RequestStorageAccessFor`, which restored the API in Electron 45, no longer has
+any effect. See
+[Chromium's intent to remove discussion](https://groups.google.com/a/chromium.org/g/blink-dev/c/bqHGZYHWxnQ)
+for more information.
+
+## Breaking API Changes (45.0)
+
+### Removed: Node.js module shims and `Buffer`, `setImmediate`, `clearImmediate` globals in sandboxed preload scripts
+
+Sandboxed preload scripts (the default since Electron 20) and service worker preload
+scripts no longer have access to the `events`, `timers` and `url` Node.js module
+shims through `require`, and are no longer run with `Buffer`, `setImmediate` and
+`clearImmediate` in scope. These were browser polyfills bundled into every sandboxed
+renderer rather than the Node.js implementations. `require` in a sandboxed preload
+now only loads `electron` (and `electron/renderer`, `electron/common`); `process`
+and `global` are still provided.
+
+Use the equivalent Web APIs instead, or bundle the polyfill you need into your
+preload script:
+
+| Removed | Use instead |
+| --- | --- |
+| `require('events')` / `EventEmitter` | `EventTarget` and `Event`, or bundle the `events` package |
+| `require('timers')`, `setImmediate`, `clearImmediate` | `setTimeout` / `clearTimeout`, `queueMicrotask` |
+| `require('url')` | `URL`, `URLSearchParams` |
+| `Buffer` | `Uint8Array`, `TextEncoder` / `TextDecoder`, `atob` / `btoa`, or bundle the `buffer` package |
+
+`ipcRenderer` and the preload's `process` object keep their `EventEmitter` methods
+(`on`, `once`, `off`, `emit`, `removeListener`, `removeAllListeners`, ...).
+Preload scripts for renderers with `sandbox: false` are unaffected and continue to
+have the full Node.js environment.
+
+### Behavior Changed: `ipcRenderer` and `process` in sandboxed preload scripts use a native `EventEmitter`
+
+In sandboxed preload scripts and service worker preload scripts, `ipcRenderer`,
+`webFrame` and the preload's `process` object now inherit from an `EventEmitter`
+implemented natively by Electron instead of one from a bundled copy of the `events`
+npm package. It provides the same instance API as before (`on`, `once`, `off`,
+`emit`, `addListener`, `removeListener`, `removeAllListeners`, `prependListener`,
+`prependOnceListener`, `listeners`, `rawListeners`, `listenerCount`, `eventNames`,
+`setMaxListeners`, `getMaxListeners`, the `newListener` / `removeListener` events and
+the max-listener warning) with the same behavior. The static helpers that were only
+reachable through `require('events')` (`once`, `listenerCount`, `init`) are not
+provided.
+
+### Removed: `contentTracing.enableHeapProfiling()`
+
+The experimental `contentTracing.enableHeapProfiling()` API has been removed.
+Chromium removed the memlog implementation that backed this API and replaced it
+with a Perfetto heap-profiling data source. Pass a `nativeHeapProfiling` option
+to `contentTracing.startRecording()` to enable heap profiling for the duration
+of a trace. Like all recordings, heap-enabled recordings use the
+[Perfetto protobuf format](https://perfetto.dev/docs/reference/trace-packet-proto).
+
+The old options map to the new ones as follows:
+
+* `samplingRate` is now `nativeHeapProfiling.samplingInterval`.
+* `mode` has no direct equivalent. Every traced process is profiled; use
+  `included_process_ids` in a `TraceConfig` to limit which processes are traced.
+* `stackMode` has no equivalent.
+
+```js
+await contentTracing.startRecording({
+  nativeHeapProfiling: {
+    samplingInterval: 128 * 1024
+  }
+})
+```
+
+### Behavior Changed: `contentTracing` recordings use the Perfetto protobuf format
+
+`contentTracing.stopRecording()` used to write traces in the legacy JSON trace
+format. It now always writes the
+[Perfetto protobuf format](https://perfetto.dev/docs/reference/trace-packet-proto),
+and the JSON format is no longer available. Open recordings in the
+[Perfetto UI](https://ui.perfetto.dev), or query them with Perfetto's
+[Trace Processor](https://perfetto.dev/docs/analysis/trace-processor). If you
+still need the legacy JSON format, Perfetto's
+[`traceconv`](https://perfetto.dev/docs/quickstart/traceconv) tool can convert
+a recording to it.
+
+### Behavior Changed: screen capture requests are reported as `display-capture` in `setPermissionRequestHandler`
+
+Requests to capture the screen, a window or a tab -- made through
+`navigator.mediaDevices.getDisplayMedia()` or through `getUserMedia()` with the
+`chromeMediaSource` / `chromeMediaSourceId` constraints used with
+[`desktopCapturer`](api/desktop-capturer.md) -- are now passed to
+[`session.setPermissionRequestHandler`](api/session.md#sessetpermissionrequesthandlerhandler)
+with the documented `display-capture` permission. Previously they were reported as
+`media` with an empty `details.mediaTypes` array, indistinguishable from a camera
+or microphone request other than by that empty array. `media` is now only used for
+camera and microphone devices.
+
+Applications with a permission request handler that grants `media` and denies
+everything else must also grant `display-capture` to keep screen sharing working:
+
+```js
+session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+  if (permission === 'media' || permission === 'display-capture') {
+    return callback(true)
+  }
+  callback(false)
+})
+```
+
+For `display-capture` requests, `details.mediaTypes` now lists `video` and/or
+`audio` to indicate whether display video and/or display audio was requested.
+The `setDisplayMediaRequestHandler` flow for `getDisplayMedia()` is unchanged and
+still runs after the permission request has been granted.
+
+The [`display-capture` Permissions-Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Permissions-Policy/display-capture)
+is now also applied to `getUserMedia()` calls that use the `chromeMediaSource`
+constraints, matching `getDisplayMedia()`. Its default allowlist is `self`, so a
+cross-origin `<iframe>` that captures the screen this way now needs
+`allow="display-capture"` on the iframe element.
+
+### Default Changed: `document.requestStorageAccessFor` is disabled
+
+Chromium has disabled `document.requestStorageAccessFor` by default ahead of
+its removal. The API can temporarily be restored with the
+[`enableBlinkFeatures`](api/structures/web-preferences.md) web preference set to
+`RequestStorageAccessFor`. See
+[Chromium's intent to remove discussion](https://groups.google.com/a/chromium.org/g/blink-dev/c/bqHGZYHWxnQ)
+for more information.
+
+### Behavior Changed: file descriptors for files inside ASAR archives are only usable through `fs`
+
+`fs.open`, `fs.openSync` and `fs.promises.open` on a file inside an ASAR archive
+used to extract the file to a temporary copy and return a descriptor for that
+copy. They now return a descriptor that only identifies the entry to Node's
+`fs` module, which reads directly out of the archive with no temporary file
+(`fs.read`, `fs.readv`, `fs.fstat`, `fs.readFile(fd)`, `fs.createReadStream`
+and the `FileHandle` methods). The descriptor itself is not backed by the
+file's contents: code that reads the raw descriptor (a native addon,
+`child_process` `stdio`, `net.Socket({ fd })`,
+`http2stream.respondWithFile()` / `respondWithFD()`, a `FileHandle`
+transferred to a worker, ...) fails with `EBADF` and is not supported.
+Opening a file inside an archive with a flag that allows writing (`w`, `a`,
+`r+`, ...) now fails with `EACCES` instead of silently writing to the
+temporary copy, and `fs.fchmod`, `fs.fchown` and `fs.futimes` on these
+descriptors fail with `EACCES`.
+
+`fs.stat` on a symbolic link inside an archive now follows the link like it
+does on a real filesystem (`fs.lstat` still describes the link itself).
+
+### Behavior Changed: `window.open()` children of unsandboxed windows get their own sandboxed process
+
+A `window.open()` child normally shares its opener's renderer process, and the OS sandbox
+of a renderer process is fixed when it launches. Previously a child opened from an
+unsandboxed (e.g. `nodeIntegration: true`) window silently ran in that unsandboxed process
+even though `webContents.getLastWebPreferences()` reported `sandbox: true` for it.
+
+Now the child's own web preferences decide the sandbox state, and when that state differs
+from the opener's process the child is created in a new process with no opener
+relationship: `window.open()` returns `null` in the opener and `window.opener` is `null`
+in the child, matching the behavior of `window.open(url, '_blank', 'noopener')`. A
+warning is logged to the opener's console when this happens.
+
+Child windows default to sandboxed, so a child opened from an unsandboxed window is now
+isolated in its own sandboxed process by default. To restore the previous behavior of
+sharing the opener's unsandboxed process (and the scriptable `window.opener` / returned
+`WindowProxy` that comes with it), opt in explicitly from
+[`webContents.setWindowOpenHandler`](api/web-contents.md#contentssetwindowopenhandlerhandler):
+
+```js
+win.webContents.setWindowOpenHandler(() => ({
+  action: 'allow',
+  overrideBrowserWindowOptions: {
+    webPreferences: {
+      // Match the (unsandboxed) opener so the child shares its process.
+      sandbox: false
+    }
+  }
+}))
+```
+
+Setting `nodeIntegration: true` in the override also makes the child unsandboxed and has
+the same effect.
+
+### Deprecated: `safeStorage.isEncryptionAvailable()`, `safeStorage.encryptString()` and `safeStorage.decryptString()`
+
+The synchronous `safeStorage` methods are deprecated and will be removed in
+Electron 46, following Chromium's removal of the synchronous OSCrypt backend
+they are built on. Use the asynchronous methods instead, which use the same
+per-platform key stores. Data encrypted with `safeStorage.encryptString()` can
+be decrypted with `safeStorage.decryptStringAsync()`.
+
+```js
+// Deprecated
+if (safeStorage.isEncryptionAvailable()) {
+  const encrypted = safeStorage.encryptString('secret')
+  const decrypted = safeStorage.decryptString(encrypted)
+}
+
+// Replace with
+if (await safeStorage.isAsyncEncryptionAvailable()) {
+  const encrypted = await safeStorage.encryptStringAsync('secret')
+  const { result: decrypted } = await safeStorage.decryptStringAsync(encrypted)
+}
+```
+
+## Breaking API Changes (44.0)
+
+### Behavior Changed: `webContents` may be `null` in `select-client-certificate`
+
+The `app` `'select-client-certificate'` event is now also emitted for requests made
+via the [`net` module](api/net.md) and for [utility processes](api/utility-process.md)
+created with `respondToAuthRequestsFromMainProcess: true`. For these requests the
+`webContents` argument is `null`. Previously the event was only emitted for requests
+originating from a `WebContents` and the argument was always non-null.
+
+As with `WebContents` requests, when the event is not handled (or `event.preventDefault()`
+is not called) Electron uses the first matching client certificate from the platform
+certificate store. Previously `net` requests to a server that requested a client
+certificate failed with `ERR_SSL_CLIENT_AUTH_CERT_NEEDED`. To opt out, handle the event
+and call `callback()` with no argument to continue without a client certificate.
+
+```js
+// Before
+app.on('select-client-certificate', (event, webContents, url, list, callback) => {
+  console.log(webContents.id)
+})
+
+// After
+app.on('select-client-certificate', (event, webContents, url, list, callback) => {
+  if (webContents) console.log(webContents.id)
+})
+```
+
+### Removed: macOS 12 support
+
+macOS 12 (Monterey) is no longer supported by [Chromium](https://chromium-review.googlesource.com/c/chromium/src/+/7907086).
+
+Older versions of Electron will continue to run on Monterey, but macOS 13 (Ventura)
+or later will be required to run Electron v44.0.0 and higher.
+
+### Behavior Changed: ANGLE is statically linked on all platforms
+
+ANGLE is now [statically linked](https://issues.chromium.org/issues/40268378)
+into the Electron binary on all platforms, matching upstream Chromium. The `libEGL.(so|dylib|dll)`
+and `libGLESv2.(so|dylib|dll)` libraries are no longer shipped in the distribution.
+
+Apps that replaced or managed their own ANGLE versions by swapping out these
+libraries can no longer do so. Additionally, because ANGLE is now part
+of the Electron binary, it is loaded into every process rather than only the GPU
+process, which may surface regressions in unusual configurations.
+
+### Behavior Changed: `net.request` rejects frame destinations without navigate mode
+
+`net.request` now rejects requests where `Sec-Fetch-Dest` is `document`, `frame`,
+`iframe`, or `fencedframe` unless `Sec-Fetch-Mode` is also set to `navigate`.
+This matches Chromium's enforcement that frame-type request destinations must be
+navigations.
+
+Apps that explicitly set one of these `Sec-Fetch-Dest` values on a `net.request`
+must also set `Sec-Fetch-Mode` to `navigate`.
+
+### Removed: Unity desktop environment support on Linux
+
+Unity has not been the default desktop environment in Ubuntu LTS since version 16.04, which is not supported by current versions of Electron. The deprecation does not
+prevent Electron from running on Unity if it is installed in a newer distribution, but it will no longer offer unique functionality. In general, Electron supports
+modern [Freedesktop](https://specifications.freedesktop.org/) standards on Linux rather than APIs which only work in specific environments.
+
+One API has been removed: `app.isUnityRunning()`. Some Unity-specific APIs no longer function on Linux, but remain supported on other platforms:
+
+* `app.setBadgeCount(count)` and `app.badgeCount` _macOS_
+* `BaseWindow.setProgressBar(progress)` and `BrowserWindow.setProgressBar(progress)` _Windows_ _macOS_.
+
+### Removed: Windows 32-bit (ia32) and Linux 32-bit ARM (armv7l) support
+
+Electron no longer publishes prebuilt binaries for 32-bit platforms: Windows x86
+(`win32-ia32`) and Linux ARM (`linux-armv7l`). All related release artifacts
+(`chromedriver`, `mksnapshot`, `ffmpeg`, and the Windows x86 `node.lib` on the
+Electron headers CDN) are no longer published either.
+
+Older versions of Electron will continue to support these platforms, but Electron
+v44.0.0 and higher will only be published for 64-bit platforms.
+
+Once the v43 series reaches end of life in January 2027, these 32-bit platforms
+will no longer be supported.
+
+### Removed: `clipboard` module is no longer available in the renderer process
+
+The `clipboard` module is no longer exposed to renderer processes. It was
+[previously deprecated](#deprecated-clipboard-api-access-from-renderer-processes)
+and is now removed in line with
+[RFC&nbsp;0019](https://github.com/electron/rfcs/blob/main/text/0019-clipboard-rearchitecture.md#removing-the-clipboard-api-from-the-renderer)
+to close the security risk of granting non-sandboxed renderers direct clipboard access.
+
+Renderers should use the [`navigator.clipboard` API](https://developer.mozilla.org/en-US/docs/Web/API/Clipboard_API) to safely work with the system clipboard. If more advanced usage is necessary, expose the necessary helpers from a
+preload script using the [`contextBridge` API](api/context-bridge.md).
+When using `contextBridge` care must be taken to ensure that the [`clipboard API` is not exposed to untrusted content](https://www.electronjs.org/docs/latest/tutorial/security#20-do-not-expose-electron-apis-to-untrusted-web-content).
+
+### API Changed: `clipboard` module rearchitected to align with the W3C Clipboard API
+
+The `clipboard` module has been
+[rearchitected](https://github.com/electron/rfcs/blob/main/text/0019-clipboard-rearchitecture.md)
+to align with the [W3C Clipboard API](https://w3c.github.io/clipboard-apis/#clipboard-interface).
+The four read/write methods now all return Promises, matching
+`navigator.clipboard`:
+
+* `clipboard.read()` returns `Promise<ClipboardItem[]>`. Each item
+  exposes a `types` array and `getType(type) → Promise<Blob>` for
+  lazy retrieval — matching the W3C
+  [`ClipboardItem`](https://developer.mozilla.org/en-US/docs/Web/API/ClipboardItem)
+  instance shape. `getType('electron application/bookmark')` is the one
+  exception: it resolves to a `{ title, url }` object instead of a
+  `Blob`.
+* `clipboard.write(items)` returns `Promise<void>` and accepts an array
+  of [`ClipboardItem`](api/clipboard-item.md) instances constructed via
+  `new ClipboardItem({ [mime]: payload })` — modeled after the W3C
+  [`ClipboardItem(items)`](https://developer.mozilla.org/en-US/docs/Web/API/ClipboardItem/ClipboardItem#parameters)
+  constructor. Each payload value is `Blob | string | Object` (a `string`
+  is committed as UTF-8 and a `Blob`'s bytes are committed verbatim). The
+  `electron application/bookmark` custom format
+  instead takes a `{ title, url }` object. All entries in a single
+  `write()` call are committed atomically.
+* `clipboard.readText()` returns `Promise<string>`.
+* `clipboard.writeText(text)` returns `Promise<void>`.
+* The `text/uri-list` MIME type maps to the operating system's native
+  file-reference format (`CF_HDROP` on Windows, `NSFilenamesPboardType` on
+  macOS, `text/uri-list` on Linux) rather than a generic text payload. Its
+  payload is an [RFC&nbsp;2483](https://www.rfc-editor.org/rfc/rfc2483)
+  `file://` URI list, so `clipboard.read()`/`clipboard.write()` can read and
+  write files copied to and from native applications. See
+  [`ClipboardItem`](api/clipboard-item.md#files-the-texturi-list-mime-type)
+  for details.
+
+`clipboard.has(mimetype)` now returns `Promise<boolean>` because the
+underlying Chromium clipboard API is asynchronous. Additionally, instead
+of taking a format, `clipboard.has()` accepts a MIME type. To check for
+a raw format, eg `public/utf8-plain-text`, use the `electron application/osclipboard`
+custom format (`electron application/osclipboard;format="public/utf8-plain-text"`).
+
+The narrowly-scoped helpers (`availableFormats`, `readBookmark`,
+`writeBookmark`, `readBuffer`, `writeBuffer`, `readFindText`,
+`writeFindText`, `readHTML`, `writeHTML`, `readImage`, `writeImage`,
+`readRTF`, `writeRTF`) and the optional `type` parameter accepted by
+`clipboard.clear`, `clipboard.has`, `clipboard.readText`, and
+`clipboard.writeText` have been removed. The Linux selection clipboard is
+now reached through a new `clipboard.selection` sub-namespace.
+
+  | Old API | New API |
+  |---------|---------|
+  | `clipboard.availableFormats([type])` | `clipboard.read()` - iterate through `ClipboardItem` array and collect types |
+  | `clipboard.clear()` | `clipboard.clear()` (no type parameter) |
+  | `clipboard.clear('selection')` _Linux_ | `clipboard.selection.clear()` |
+  | `clipboard.has(format)` | `clipboard.has(mimetype)` now returns `Promise<boolean>` |
+  | `clipboard.has(format, 'selection')` _Linux_ | `clipboard.selection.has(mimetype)` (returns `Promise<boolean>`) |
+  | `clipboard.read()` | `clipboard.read()` now returns `Promise<ClipboardItem[]>` |
+  | `clipboard.read('selection')` _Linux_ | `clipboard.selection.read()` (returns `Promise<ClipboardItem[]>`) |
+  | `clipboard.readBookmark()` | `clipboard.read()` with `electron application/bookmark` custom format |
+  | `clipboard.readBuffer(format)` | `clipboard.read()` with `electron application/osclipboard;format="..."` custom format |
+  | `clipboard.readBuffer('selection')` _Linux_ | `clipboard.selection.read()` with `electron application/osclipboard;format="..."` custom format |
+  | `clipboard.readFindText()` _macOS_ | `clipboard.read()` with `electron application/findtext` custom format |
+  | `clipboard.readHTML([type])` | `clipboard.read()` with `text/html` MIME type |
+  | `clipboard.readImage([type])` | `clipboard.read()` with `image/*` MIME type |
+  | `clipboard.readRTF([type])` | `clipboard.read()` with `text/rtf` MIME type |
+  | `clipboard.readText()` | `clipboard.readText()` now returns `Promise<string>` |
+  | `clipboard.readText('selection')` _Linux_ | `clipboard.selection.readText()` (returns `Promise<string>`) |
+  | `clipboard.write(data)` | `clipboard.write([new ClipboardItem({ [mime]: Blob / string })])` — accepts an array of `ClipboardItem` objects (each with a MIME-keyed `data` record) and returns `Promise<void>` |
+  | `clipboard.write(data, 'selection')` _Linux_ | `clipboard.selection.write([new ClipboardItem({ [mime]: Blob / string })])` (returns `Promise<void>`) |
+  | `clipboard.writeBookmark(title, url[, type])` | `clipboard.write()` with `electron application/bookmark` custom format |
+  | `clipboard.writeBuffer(format, buffer[, type])` | `clipboard.write()` with `electron application/osclipboard;format="..."` custom format |
+  | `clipboard.writeBuffer(format, buffer, 'selection')` _Linux_ | `clipboard.selection.write()` with `electron application/osclipboard;format="..."` custom format |
+  | `clipboard.writeFindText(text)` _macOS_ | `clipboard.write()` with `electron application/findtext` custom format |
+  | `clipboard.writeHTML(markup[, type])` | `clipboard.write()` with `text/html` MIME type |
+  | `clipboard.writeImage(image[, type])` | `clipboard.write()` with `image/*` MIME type |
+  | `clipboard.writeRTF(text[, type])` | `clipboard.write()` with `text/rtf` MIME type |
+  | `clipboard.writeText(text)` | `clipboard.writeText(text)` now returns `Promise<void>` |
+  | `clipboard.writeText(text, 'selection')` _Linux_ | `clipboard.selection.writeText(text)` (returns `Promise<void>`) |
+
+#### Example migration code
+
+```js
+const { clipboard, ClipboardItem } = require('electron')
+
+function getClipboardToUse(clipboardType) {
+  if (clipboardType === 'selection') {
+    return clipboard.selection
+  } else {
+    return clipboard
+  }
+}
+
+async function readClipboard(format, clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  const clipboardItems = await clipboardToUse.read()
+  const foundItem = clipboardItems.find((clipboardItem) => {
+    return clipboardItem.types.includes(format)
+  })
+  if (foundItem) {
+    // getType() resolves to a Blob; read it back as text.
+    const blob = await foundItem.getType(format)
+    return blob.text()
+  }
+}
+
+async function writeClipboard(format, text, clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  return clipboardToUse.write([
+    new ClipboardItem({
+      [format]: text
+    })
+  ])
+}
+
+async function readBuffer(format, clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  const clipboardItems = await clipboardToUse.read()
+  const foundItem = clipboardItems.find((clipboardItem) => {
+    return clipboardItem.types.includes(format)
+  })
+  if (foundItem) {
+    // getType() resolves to a Blob; convert it to a Buffer.
+    const blob = await foundItem.getType(format)
+    return Buffer.from(await blob.arrayBuffer())
+  }
+}
+
+async function writeBuffer(format, buffer, clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  return clipboardToUse.write([
+    new ClipboardItem({
+      [format]: new Blob([buffer])
+    })
+  ])
+}
+
+async function availableFormats(clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  const clipboardItems = await clipboardToUse.read()
+  const clipboardFormats = []
+  for (const clipboardItem of clipboardItems) {
+    for (const type of clipboardItem.types) {
+      if (!clipboardFormats.includes(type)) {
+        clipboardFormats.push(type)
+      }
+    }
+  }
+  return clipboardFormats
+}
+
+async function has(format, clipboardType, isRawFormat) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  let mimeType = format
+  if (isRawFormat) {
+    mimeType = `electron application/osclipboard;format="${format}"`
+  }
+  return clipboardToUse.has(mimeType)
+}
+
+const BOOKMARK_MIME_TYPE = 'electron application/bookmark'
+async function readBookmark(clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  const clipboardItems = await clipboardToUse.read()
+  const foundItem = clipboardItems.find((clipboardItem) => {
+    return clipboardItem.types.includes(BOOKMARK_MIME_TYPE)
+  })
+  if (foundItem) {
+    // getType('electron application/bookmark') resolves to a
+    // { title, url } object rather than a Buffer.
+    return foundItem.getType(BOOKMARK_MIME_TYPE)
+  }
+}
+
+async function writeBookmark(title, url, clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  return clipboardToUse.write([
+    new ClipboardItem({
+      [BOOKMARK_MIME_TYPE]: { title, url }
+    })
+  ])
+}
+
+const FIND_TEXT_MIME_TYPE = 'electron application/findtext'
+async function readFindText() {
+  return readClipboard(FIND_TEXT_MIME_TYPE)
+}
+
+async function writeFindText(text) {
+  return writeClipboard(FIND_TEXT_MIME_TYPE, text)
+}
+
+const HTML_MIME_TYPE = 'text/html'
+async function readHTML(clipboardType) {
+  return readClipboard(HTML_MIME_TYPE, clipboardType)
+}
+
+async function writeHTML(markup, clipboardType) {
+  return writeClipboard(HTML_MIME_TYPE, markup, clipboardType)
+}
+
+const PNG_MIME_TYPE = 'image/png'
+const JPEG_MIME_TYPE = 'image/jpeg'
+async function readImage(clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  const clipboardItems = await clipboardToUse.read()
+  // Look for PNG first
+  let foundItem = clipboardItems.find((clipboardItem) => {
+    return clipboardItem.types.includes(PNG_MIME_TYPE)
+  })
+  if (!foundItem) {
+    foundItem = clipboardItems.find((clipboardItem) => {
+      return clipboardItem.types.includes(JPEG_MIME_TYPE)
+    })
+  }
+  if (foundItem) {
+    const mimeType = foundItem.types.includes(PNG_MIME_TYPE) ? PNG_MIME_TYPE : JPEG_MIME_TYPE
+    // getType() resolves to a Blob; convert it to a Buffer for nativeImage.
+    const blob = await foundItem.getType(mimeType)
+    const buffer = Buffer.from(await blob.arrayBuffer())
+    return nativeImage.createFromBuffer(buffer)
+  }
+}
+
+async function writeImage(image, clipboardType) {
+  const clipboardToUse = getClipboardToUse(clipboardType)
+  return clipboardToUse.write([
+    new ClipboardItem({
+      'image/png': new Blob([image.toPNG()], { type: 'image/png' })
+    })
+  ])
+}
+
+const RTF_MIME_TYPE = 'text/rtf'
+async function readRTF(clipboardType) {
+  return readClipboard(RTF_MIME_TYPE, clipboardType)
+}
+
+async function writeRTF(text, clipboardType) {
+  return writeClipboard(RTF_MIME_TYPE, text, clipboardType)
+}
+```
+
+### Removed: Pre-macOS 13 login item attributes
+
+Electron 44 removes the option `openAsHidden` from
+[`app.setLoginItemSettings()`](https://www.electronjs.org/docs/latest/api/app#appsetloginitemsettingssettings-macos-windows)
+and the fields `openAsHidden`, `wasOpenedAsHidden` and `restoreState` from the return value of
+[`app.getLoginItemSettings()`](https://www.electronjs.org/docs/latest/api/app#appgetloginitemsettingsoptions-macos-windows).
+
+These only worked on macOS 12 and below. Support for macOS 12 has been dropped.
+
+## Breaking API Changes (43.0)
+
+### Behavior Changed: Rounded corners on Linux
+
+Frameless windows default to rounded corners on Linux if the desktop environment supports client-side decorations. This can be configured using the existing `roundedCorners` option on `BrowserWindow`,
+which is now supported on Linux and defaults to `true` on all platforms.
+
+### Behavior Changed: WCO respects the native title bar layout on Linux
+
+Frameless windows with Window Controls Overlay (WCO) now adopt the native title bar layout and user settings on Linux. For example, controls will appear on the left side of the frame on RTL systems, and only the close button will be visible by default on GNOME. Depending on the user's desktop environment and configuration, buttons can appear on the left or right side of the frame (or both). To account for all possibilities, use the CSS variables `env(titlebar-area-x, 0px)` and `env(titlebar-area-width, 100%)` to constrain your app's title bar content to a safe area.
+
+### Behavior Changed: `NativeImage.toBitmap()` now normalizes color space
+
+`NativeImage.toBitmap()` (and its deprecated alias `NativeImage.getBitmap()`) now normalizes pixel data to sRGB by default. Previously, raw pixel data was returned without color space conversion, which meant pixel values from images with different embedded color profiles (e.g., Display P3 on macOS) could differ for the same visual color.
+
+To preserve the previous behavior, pass the image's original color space in the `colorSpace`
+option. You can also pass `colorSpace` to convert to any other specific color space:
+
+```js
+const image = nativeImage.createFromPath('photo.png')
+// New default: normalized to sRGB
+const srgbBitmap = image.toBitmap()
+// Convert to Display P3
+const p3Bitmap = image.toBitmap({
+  colorSpace: {
+    primaries: 'p3',
+    transfer: 'srgb',
+    matrix: 'rgb',
+    range: 'full'
+  }
+})
+```
+
+### Behavior Changed: `chrome.scripting` CSS injection matches more fallback frames
+
+Extensions using `chrome.scripting.insertCSS()` or `chrome.scripting.removeCSS()`
+now follow Chrome's behavior when Electron cannot match a frame's URL directly,
+such as with `about:blank` or `data:` frames. If the extension has access to the
+page that created the frame, CSS may now be inserted into or removed from those
+fallback frames as well.
+
+Apps or extensions that relied on Electron skipping those frames should narrow their
+injection target, frame IDs, or match patterns.
+
+### Behavior Changed: Dialog methods default to Downloads directory
+
+The `defaultPath` option for the following methods now defaults to the user's Downloads folder (or their home directory if Downloads doesn't exist) when not explicitly provided:
+
+* `dialog.showOpenDialog`
+* `dialog.showOpenDialogSync`
+* `dialog.showSaveDialog`
+* `dialog.showSaveDialogSync`
+
+Previously, when no `defaultPath` was provided, the underlying OS file dialog would determine the initial directory — typically remembering the last directory the user navigated to, or falling back to an OS-specific default. Now, Electron explicitly sets the initial directory to Downloads, which also means the OS will no longer track and restore the last-used directory between dialog invocations.
+
+To preserve the old behavior, you can track the last-used directory yourself and pass it as `defaultPath`:
+
+```js
+const path = require('node:path')
+
+let lastUsedPath
+const result = await dialog.showOpenDialog({
+  defaultPath: lastUsedPath
+})
+
+if (!result.canceled && result.filePaths.length > 0) {
+  lastUsedPath = path.dirname(result.filePaths[0])
+}
+```
+
+### Removed: `showHiddenFiles` in Dialogs on Linux
+
+The `showHiddenFiles` property is no longer supported on Linux.
+It continues to work on macOS and Windows. GTK intends for this feature
+to be a user choice rather than an app choice, and has removed the API
+to do this programmatically.
+
+## Breaking API Changes (42.0)
+
+### Behavior Changed: macOS notifications now use `UNNotification` API
+
+Electron has migrated from the deprecated `NSUserNotification` API to the
+[`UNNotification`](https://developer.apple.com/documentation/usernotifications)
+API on macOS. The new API requires that an application be code-signed in order
+for notifications to be displayed. If an application is not code-signed,
+notifications will emit a `failed` event on the `Notification` object.
+
+### Behavior Changed: Offscreen rendering will use `1.0` as default device scale factor.
+
+Previously, OSR used the primary display's device scale factor for rendering, which made the output frame size vary across users.
+Developers had to manually calculate the correct size using `screen.getPrimaryDisplay().scaleFactor`. We now provide an optional property
+`webPreferences.offscreen.deviceScaleFactor` to specify a custom value when creating an OSR window. At first, if the property is not set, it defaults
+to the primary display's scale factor (preserving the old behavior). Starting from Electron 42, the default will change to a constant value of `1.0`
+for more consistent output sizes.
+
+### Behavior Changed: `electron` no longer downloads itself via `postinstall` script
+
+Previously, the `electron` npm package would download the Electron binary from the repository's
+GitHub Releases in the package's `postinstall` script.
+
+With recent supply chain security attacks against the npm ecosystem with `postinstall` scripts as a
+common attack vector, Electron will now download itself dynamically the first time that its main
+`bin` script is run (e.g. via `npx electron`). With this change, you can now use Electron with the
+npm `--ignore-scripts` flag. See [RFC #22](https://github.com/electron/rfcs/pull/22) for more context.
+
+```sh
+# won't install binary to `node_modules/electron`
+npm install electron --save-dev --ignore-scripts
+
+# will download the binary on demand before starting electron process
+npx electron .
+
+# subsequent runs will used the binary downloaded from the first run
+npx electron .
+```
+
+If you need to download the Electron binary on-demand, you can now call the `install-electron` script,
+which contains the exact same code from the former `postinstall` script.
+
+```sh
+npm install electron --save-dev --ignore-scripts
+npx install-electron --no
+```
+
+If you need to test changes across platforms or architectures, you should now use the
+`ELECTRON_INSTALL_ARCH` and `ELECTRON_INSTALL_PLATFORM` environment variables.
+
+```sh
+# before: pass npm config flag on install command
+npm install --platform=mas electron --save-dev
+# after: add env var when you first run the Electron command
+npm install electron --save-dev
+ELECTRON_INSTALL_PLATFORM=mas npx electron . --no
+```
+
+This also means the `ELECTRON_SKIP_BINARY_DOWNLOAD` environment variable is no
+longer supported, as its primary purpose was to prevent the `postinstall` script from running.
+
+### Removed: `quotas` object from `Session.clearStorageData(options)`
+
+When calling `Session.clearStorageData(options)`, the `options.quotas` object is no longer supported because it has been
+[removed](https://chromium-review.googlesource.com/c/chromium/src/+/7596126)
+from upstream Chromium.
+
+### Deprecated: Passing only an array `hslShift` to `nativeImage.createFromNamedImage()`
+
+Passing only an array `hslShift` to `nativeImage.createFromNamedImage()` is deprecated. You should now pass an options object with an `hslShift` property instead:
+
+```js
+// Deprecated
+nativeImage.createFromNamedImage(imageName, [0, 1, -1])
+// Replace with
+nativeImage.createFromNamedImage(imageName, {
+  hslShift: [0, 1, -1]
+})
+```
+
+## Breaking API Changes (41.0)
+
+### Behavior Changed: PDFs no longer create a separate WebContents
+
+Previously, PDF resources created a separate guest [WebContents](https://www.electronjs.org/docs/latest/api/web-contents) for rendering. Now, PDFs are rendered within the same WebContents instead. If you have code to detect PDF resources, use the [frame tree](https://www.electronjs.org/docs/latest/api/web-frame-main) instead of WebContents.
+
+Under the hood, Chromium [enabled](https://chromium-review.googlesource.com/c/chromium/src/+/7239572) a feature that changes PDFs to use out-of-process iframes (OOPIFs) instead of the `MimeHandlerViewGuest` extension.
+
+### Behavior Changed: Updated Cookie Change Cause in the Cookie 'changed' Event
+
+We have updated the [cookie](https://www.electronjs.org/docs/latest/api/cookies#event-changed) change cause in the cookie 'changed' event.
+When a new cookie is set, the change cause is `inserted`.
+When a cookie is deleted, the change cause remains `explicit`.
+When the cookie being set is identical to an existing one (same name, domain, path, and value, with no actual changes), the change cause is `inserted-no-change-overwrite`.
+When the value of the cookie being set remains unchanged but some of its attributes are updated, such as the expiration attribute, the change cause will be `inserted-no-value-change-overwrite`.
+
+### Deprecated: `showHiddenFiles` in Dialogs on Linux
+
+This property will still be honored on macOS and Windows, but support on Linux
+will be removed in a future version of Electron. GTK intends for this to be a user choice rather
+than an app choice and has removed the API to do this programmatically.
+
+## Breaking API Changes (40.0)
+
+### Deprecated: `clipboard` API access from renderer processes
+
+Using the `clipboard` API directly in the renderer process is deprecated.
+If you want to call this API from a renderer process, place the API call in
+your preload script and expose it using the [contextBridge](https://www.electronjs.org/docs/latest/api/context-bridge) API.
+
+### Behavior Changed: MacOS dSYM files now compressed with tar.xz
+
+Debug symbols for MacOS (dSYM) now use xz compression in order to handle larger file sizes. `dsym.zip` files are now
+`dsym.tar.xz` files. End users using debug symbols may need to update their zip utilities.
+
+## Breaking API Changes (39.0)
+
+### Deprecated: `--host-rules` command line switch
+
+Chromium is deprecating the `--host-rules` switch.
+
+You should use `--host-resolver-rules` instead.
+
+### Behavior Changed: window.open popups are always resizable
+
+Per current [WHATWG spec](https://html.spec.whatwg.org/multipage/nav-history-apis.html#dom-open-dev), the `window.open` API will now always create a resizable popup window.
+
+To restore previous behavior:
+
+```js
+webContents.setWindowOpenHandler((details) => {
+  return {
+    action: 'allow',
+    overrideBrowserWindowOptions: {
+      resizable: details.features.includes('resizable=yes')
+    }
+  }
+})
+```
+
+### Behavior Changed: `NSAudioCaptureUsageDescription` should be included in your app's Info.plist file to use `desktopCapturer` (🍏 macOS ≥14.2)
+
+Per [Chromium update](https://source.chromium.org/chromium/chromium/src/+/ad17e8f8b93d5f34891b06085d373a668918255e) which enables Apple's newer [CoreAudio Tap API](https://developer.apple.com/documentation/CoreAudio/capturing-system-audio-with-core-audio-taps#Configure-the-sample-code-project) by default, you now must have `NSAudioCaptureUsageDescription` defined in your `Info.plist` to use `desktopCapturer`.
+
+Electron's `desktopCapturer` will create a dead audio stream if the new permission is absent however no errors or warnings will occur. This is partially a side-effect of Chromium not falling back to the older `Screen & System Audio Recording` permissions system if the new system fails.
+
+To restore previous behavior (Electron 39 through 44 only; the flag was removed upstream in
+Electron 45 and no longer has any effect):
+
+```js
+// main.js (right beneath your require/import statements)
+app.commandLine.appendSwitch('disable-features', 'MacCatapLoopbackAudioForScreenShare')
+```
+
+### Behavior Changed: shared texture OSR `paint` event data structure
+
+When using shared texture offscreen rendering feature, the `paint` event now emits a more structured object.
+It moves the `sharedTextureHandle`, `planes`, `modifier` into a unified `handle` property.
+See the [OffscreenSharedTexture](./api/structures/offscreen-shared-texture.md) API structure for more details.
+
+## Breaking API Changes (38.0)
+
+### Removed: `ELECTRON_OZONE_PLATFORM_HINT` environment variable
+
+The default value of the `--ozone-platform` flag [changed to `auto`](https://chromium-review.googlesource.com/c/chromium/src/+/6775426).
+
+Electron now defaults to running as a native Wayland app when launched in a Wayland session (when `XDG_SESSION_TYPE=wayland`).
+Users can force XWayland by passing `--ozone-platform=x11`.
+
+### Removed: `ORIGINAL_XDG_CURRENT_DESKTOP` environment variable
+
+Previously, Electron changed the value of `XDG_CURRENT_DESKTOP` internally to `Unity`, and stored the original name of the desktop session
+in a separate variable. `XDG_CURRENT_DESKTOP` is no longer overridden and now reflects the actual desktop environment.
 
 ### Removed: macOS 11 support
 
@@ -21,7 +879,23 @@ macOS 11 (Big Sur) is no longer supported by [Chromium](https://chromium-review.
 Older versions of Electron will continue to run on Big Sur, but macOS 12 (Monterey)
 or later will be required to run Electron v38.0.0 and higher.
 
-## Planned Breaking API Changes (37.0)
+### Removed: `plugin-crashed` event
+
+The `plugin-crashed` event has been removed from `webContents`.
+
+### Deprecated: `webFrame.routingId` property
+
+The `routingId` property will be removed from `webFrame` objects.
+
+You should use `webFrame.frameToken` instead.
+
+### Deprecated: `webFrame.findFrameByRoutingId(routingId)`
+
+The `webFrame.findFrameByRoutingId(routingId)` function will be removed.
+
+You should use `webFrame.findFrameByToken(frameToken)` instead.
+
+## Breaking API Changes (37.0)
 
 ### Utility Process unhandled rejection behavior change
 
@@ -69,7 +943,7 @@ and then using it in `ProtocolResponse.session`.
 `BrowserWindow.IsVisibleOnAllWorkspaces()` will now return false on Linux if the
 window is not currently visible.
 
-## Planned Breaking API Changes (36.0)
+## Breaking API Changes (36.0)
 
 ### Behavior Changes: `app.commandLine`
 
@@ -77,7 +951,7 @@ window is not currently visible.
 
 `app.commandLine` was only meant to handle chromium switches (which aren't case-sensitive) and switches passed via `app.commandLine` will not be passed down to any of the child processes.
 
-If you were using `app.commandLine` to control the behavior of the  main process, you should do this via `process.argv`.
+If you were using `app.commandLine` to control the behavior of the main process, you should do this via `process.argv`.
 
 ### Deprecated: `NativeImage.getBitmap()`
 
@@ -107,7 +981,7 @@ from upstream Chromium.
 ### Deprecated: `null` value for `session` property in `ProtocolResponse`
 
 Previously, setting the ProtocolResponse.session property to `null`
-Would create a random independent session. This is no longer supported.
+would create a random independent session. This is no longer supported.
 
 Using single-purpose sessions here is discouraged due to overhead costs;
 however, old code that needs to preserve this behavior can emulate it by
@@ -118,7 +992,7 @@ and then using it in `ProtocolResponse.session`.
 
 When calling `Session.clearStorageData(options)`, the `options.quota`
 property is deprecated. Since the `syncable` type was removed, there
-is only type left -- `'temporary'` -- so specifying it is unnecessary.
+is only one type left -- `'temporary'` -- so specifying it is unnecessary.
 
 ### Deprecated: Extension methods and events on `session`
 
@@ -152,7 +1026,7 @@ $ electron --gtk-version=3   # or --gtk-version=2
 
 The same can be done with the [`app.commandLine.appendSwitch`](https://www.electronjs.org/docs/latest/api/command-line#commandlineappendswitchswitch-value) function.
 
-## Planned Breaking API Changes (35.0)
+## Breaking API Changes (35.0)
 
 ### Behavior Changed: Dialog API's `defaultPath` option on Linux
 
@@ -236,7 +1110,7 @@ It has been always returning `true` since Electron 23, which only supports Windo
 
 https://learn.microsoft.com/en-us/windows/win32/dwm/composition-ovw#disabling-dwm-composition-windows7-and-earlier
 
-## Planned Breaking API Changes (34.0)
+## Breaking API Changes (34.0)
 
 ### Behavior Changed: menu bar will be hidden during fullscreen on Windows
 
@@ -244,7 +1118,7 @@ This brings the behavior to parity with Linux. Prior behavior: Menu bar is still
 
 **Correction**: This was previously listed as a breaking change in Electron 33, but was first released in Electron 34.
 
-## Planned Breaking API Changes (33.0)
+## Breaking API Changes (33.0)
 
 ### Deprecated: `document.execCommand("paste")`
 
@@ -294,7 +1168,9 @@ protocol.registerFileProtocol('other', () => {
 })
 
 const mainWindow = new BrowserWindow()
-mainWindow.loadURL('data:text/html,<script src="loaded-from-dataurl.js"></script>', { baseURLForDataURL: 'other://C:\\myapp' })
+mainWindow.loadURL('data:text/html,<script src="loaded-from-dataurl.js"></script>', {
+  baseURLForDataURL: 'other://C:\\myapp'
+})
 mainWindow.loadURL('other://C:\\myapp\\index.html')
 
 // Replace with
@@ -349,7 +1225,7 @@ const shouldReduceTransparency = systemPreferences.accessibilityDisplayShouldRed
 const prefersReducedTransparency = nativeTheme.prefersReducedTransparency
 ```
 
-## Planned Breaking API Changes (32.0)
+## Breaking API Changes (32.0)
 
 ### Removed: `File.path`
 
@@ -372,7 +1248,7 @@ electron.showFilePath(file)
 const { contextBridge, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('electron', {
-  showFilePath (file) {
+  showFilePath(file) {
     // It's best not to expose the full file path to the web content if
     // possible.
     const path = webUtils.getPathForFile(file)
@@ -416,7 +1292,7 @@ The `databases` directory was used by WebSQL, which was removed in Electron 31.
 Chromium now performs a cleanup that deletes this directory. See
 [issue #45396](https://github.com/electron/electron/issues/45396).
 
-## Planned Breaking API Changes (31.0)
+## Breaking API Changes (31.0)
 
 ### Removed: `WebSQL` support
 
@@ -435,7 +1311,7 @@ See [crbug.com/332584706](https://issues.chromium.org/issues/332584706) for more
 
 This brings the behavior to parity with Windows and Linux. Prior behavior: The first `flashFrame(true)` bounces the dock icon only once (using the [NSInformationalRequest](https://developer.apple.com/documentation/appkit/nsrequestuserattentiontype/nsinformationalrequest) level) and `flashFrame(false)` does nothing. New behavior: Flash continuously until `flashFrame(false)` is called. This uses the [NSCriticalRequest](https://developer.apple.com/documentation/appkit/nsrequestuserattentiontype/nscriticalrequest) level instead. To explicitly use `NSInformationalRequest` to cause a single dock icon bounce, it is still possible to use [`dock.bounce('informational')`](https://www.electronjs.org/docs/latest/api/dock#dockbouncetype-macos).
 
-## Planned Breaking API Changes (30.0)
+## Breaking API Changes (30.0)
 
 ### Behavior Changed: cross-origin iframes now use Permission Policy to access features
 
@@ -447,7 +1323,7 @@ more information.
 
 ### Removed: The `--disable-color-correct-rendering` switch
 
-This switch was never formally documented but it's removal is being noted here regardless. Chromium itself now has better support for color spaces so this flag should not be needed.
+This switch was never formally documented but its removal is being noted here regardless. Chromium itself now has better support for color spaces so this flag should not be needed.
 
 ### Behavior Changed: `BrowserView.setAutoResize` behavior on macOS
 
@@ -489,7 +1365,7 @@ property instead.
 
 Chromium has removed access to this information.
 
-## Planned Breaking API Changes (29.0)
+## Breaking API Changes (29.0)
 
 ### Behavior Changed: `ipcRenderer` can no longer be sent over the `contextBridge`
 
@@ -511,10 +1387,14 @@ Use the new `render-process-gone` event instead.
 
 ```js
 // Removed
-app.on('renderer-process-crashed', (event, webContents, killed) => { /* ... */ })
+app.on('renderer-process-crashed', (event, webContents, killed) => {
+  /* ... */
+})
 
 // Replace with
-app.on('render-process-gone', (event, webContents, details) => { /* ... */ })
+app.on('render-process-gone', (event, webContents, details) => {
+  /* ... */
+})
 ```
 
 ### Removed: `crashed` event on `WebContents` and `<webview>`
@@ -524,12 +1404,20 @@ Use the new `render-process-gone` event instead.
 
 ```js
 // Removed
-win.webContents.on('crashed', (event, killed) => { /* ... */ })
-webview.addEventListener('crashed', (event) => { /* ... */ })
+win.webContents.on('crashed', (event, killed) => {
+  /* ... */
+})
+webview.addEventListener('crashed', (event) => {
+  /* ... */
+})
 
 // Replace with
-win.webContents.on('render-process-gone', (event, details) => { /* ... */ })
-webview.addEventListener('render-process-gone', (event) => { /* ... */ })
+win.webContents.on('render-process-gone', (event, details) => {
+  /* ... */
+})
+webview.addEventListener('render-process-gone', (event) => {
+  /* ... */
+})
 ```
 
 ### Removed: `gpu-process-crashed` event on `app`
@@ -539,13 +1427,17 @@ Use the new `child-process-gone` event instead.
 
 ```js
 // Removed
-app.on('gpu-process-crashed', (event, killed) => { /* ... */ })
+app.on('gpu-process-crashed', (event, killed) => {
+  /* ... */
+})
 
 // Replace with
-app.on('child-process-gone', (event, details) => { /* ... */ })
+app.on('child-process-gone', (event, details) => {
+  /* ... */
+})
 ```
 
-## Planned Breaking API Changes (28.0)
+## Breaking API Changes (28.0)
 
 ### Behavior Changed: `WebContents.backgroundThrottling` set to false affects all `WebContents` in the host `BrowserWindow`
 
@@ -615,10 +1507,14 @@ Use the new `render-process-gone` event instead.
 
 ```js
 // Deprecated
-app.on('renderer-process-crashed', (event, webContents, killed) => { /* ... */ })
+app.on('renderer-process-crashed', (event, webContents, killed) => {
+  /* ... */
+})
 
 // Replace with
-app.on('render-process-gone', (event, webContents, details) => { /* ... */ })
+app.on('render-process-gone', (event, webContents, details) => {
+  /* ... */
+})
 ```
 
 ### Deprecated: `params.inputFormType` property on `context-menu` on `WebContents`
@@ -634,12 +1530,20 @@ Use the new `render-process-gone` event instead.
 
 ```js
 // Deprecated
-win.webContents.on('crashed', (event, killed) => { /* ... */ })
-webview.addEventListener('crashed', (event) => { /* ... */ })
+win.webContents.on('crashed', (event, killed) => {
+  /* ... */
+})
+webview.addEventListener('crashed', (event) => {
+  /* ... */
+})
 
 // Replace with
-win.webContents.on('render-process-gone', (event, details) => { /* ... */ })
-webview.addEventListener('render-process-gone', (event) => { /* ... */ })
+win.webContents.on('render-process-gone', (event, details) => {
+  /* ... */
+})
+webview.addEventListener('render-process-gone', (event) => {
+  /* ... */
+})
 ```
 
 ### Deprecated: `gpu-process-crashed` event on `app`
@@ -649,13 +1553,17 @@ Use the new `child-process-gone` event instead.
 
 ```js
 // Deprecated
-app.on('gpu-process-crashed', (event, killed) => { /* ... */ })
+app.on('gpu-process-crashed', (event, killed) => {
+  /* ... */
+})
 
 // Replace with
-app.on('child-process-gone', (event, details) => { /* ... */ })
+app.on('child-process-gone', (event, details) => {
+  /* ... */
+})
 ```
 
-## Planned Breaking API Changes (27.0)
+## Breaking API Changes (27.0)
 
 ### Removed: macOS 10.13 / 10.14 support
 
@@ -681,11 +1589,17 @@ Use the new `updated` event on the `nativeTheme` module instead.
 
 ```js
 // Removed
-systemPreferences.on('inverted-color-scheme-changed', () => { /* ... */ })
-systemPreferences.on('high-contrast-color-scheme-changed', () => { /* ... */ })
+systemPreferences.on('inverted-color-scheme-changed', () => {
+  /* ... */
+})
+systemPreferences.on('high-contrast-color-scheme-changed', () => {
+  /* ... */
+})
 
 // Replace with
-nativeTheme.on('updated', () => { /* ... */ })
+nativeTheme.on('updated', () => {
+  /* ... */
+})
 ```
 
 ### Removed: Some `window.setVibrancy` options on macOS
@@ -751,7 +1665,7 @@ systemPreferences.getColor('alternate-selected-control-text')
 systemPreferences.getColor('selected-content-background')
 ```
 
-## Planned Breaking API Changes (26.0)
+## Breaking API Changes (26.0)
 
 ### Deprecated: `webContents.getPrinters`
 
@@ -804,7 +1718,7 @@ systemPreferences.getColor('alternate-selected-control-text')
 systemPreferences.getColor('selected-content-background')
 ```
 
-## Planned Breaking API Changes (25.0)
+## Breaking API Changes (25.0)
 
 ### Deprecated: `protocol.{un,}{register,intercept}{Buffer,String,Stream,File,Http}Protocol` and `protocol.isProtocol{Registered,Intercepted}`
 
@@ -891,7 +1805,7 @@ if (ret === null) {
 }
 ```
 
-## Planned Breaking API Changes (24.0)
+## Breaking API Changes (24.0)
 
 ### API Changed: `nativeImage.createThumbnailFromPath(path, size)`
 
@@ -906,13 +1820,13 @@ const imagePath = path.join('path', 'to', 'capybara.png')
 
 // Scaling up a smaller image.
 const upSize = { width: 256, height: 256 }
-nativeImage.createThumbnailFromPath(imagePath, upSize).then(result => {
+nativeImage.createThumbnailFromPath(imagePath, upSize).then((result) => {
   console.log(result.getSize()) // { width: 256, height: 256 }
 })
 
 // Scaling down a larger image.
 const downSize = { width: 64, height: 64 }
-nativeImage.createThumbnailFromPath(imagePath, downSize).then(result => {
+nativeImage.createThumbnailFromPath(imagePath, downSize).then((result) => {
   console.log(result.getSize()) // { width: 64, height: 64 }
 })
 ```
@@ -923,12 +1837,12 @@ Previous Behavior (on Windows):
 // a 128x128 image
 const imagePath = path.join('path', 'to', 'capybara.png')
 const size = { width: 256, height: 256 }
-nativeImage.createThumbnailFromPath(imagePath, size).then(result => {
+nativeImage.createThumbnailFromPath(imagePath, size).then((result) => {
   console.log(result.getSize()) // { width: 128, height: 128 }
 })
 ```
 
-## Planned Breaking API Changes (23.0)
+## Breaking API Changes (23.0)
 
 ### Behavior Changed: Draggable Regions on macOS
 
@@ -978,13 +1892,13 @@ const w = new BrowserWindow({ show: false })
 
 // Removed in Electron 23
 w.webContents.incrementCapturerCount()
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
   w.webContents.decrementCapturerCount()
 })
 
 // Replace with
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
 })
 ```
@@ -999,18 +1913,18 @@ const w = new BrowserWindow({ show: false })
 
 // Removed in Electron 23
 w.webContents.incrementCapturerCount()
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
   w.webContents.decrementCapturerCount()
 })
 
 // Replace with
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
 })
 ```
 
-## Planned Breaking API Changes (22.0)
+## Breaking API Changes (22.0)
 
 ### Deprecated: `webContents.incrementCapturerCount(stayHidden, stayAwake)`
 
@@ -1022,13 +1936,13 @@ const w = new BrowserWindow({ show: false })
 
 // Removed in Electron 23
 w.webContents.incrementCapturerCount()
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
   w.webContents.decrementCapturerCount()
 })
 
 // Replace with
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
 })
 ```
@@ -1043,13 +1957,13 @@ const w = new BrowserWindow({ show: false })
 
 // Removed in Electron 23
 w.webContents.incrementCapturerCount()
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
   w.webContents.decrementCapturerCount()
 })
 
 // Replace with
-w.capturePage().then(image => {
+w.capturePage().then((image) => {
   console.log(image.toDataURL())
 })
 ```
@@ -1127,7 +2041,7 @@ win.webContents.on('input-event', (_, event) => {
 })
 ```
 
-## Planned Breaking API Changes (21.0)
+## Breaking API Changes (21.0)
 
 ### Behavior Changed: V8 Memory Cage enabled
 
@@ -1138,7 +2052,7 @@ more details.
 
 ### API Changed: `webContents.printToPDF()`
 
-`webContents.printToPDF()` has been modified to conform to [`Page.printToPDF`](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-printToPDF) in the Chrome DevTools Protocol. This has been changes in order to
+`webContents.printToPDF()` has been modified to conform to [`Page.printToPDF`](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-printToPDF) in the Chrome DevTools Protocol. This has been changed in order to
 address changes upstream that made our previous implementation untenable and rife with bugs.
 
 **Arguments Changed**
@@ -1165,33 +2079,36 @@ address changes upstream that made our previous implementation untenable and rif
 // Main process
 const { webContents } = require('electron')
 
-webContents.printToPDF({
-  landscape: true,
-  displayHeaderFooter: true,
-  printBackground: true,
-  scale: 2,
-  pageSize: 'Ledger',
-  margins: {
-    top: 2,
-    bottom: 2,
-    left: 2,
-    right: 2
-  },
-  pageRanges: '1-5, 8, 11-13',
-  headerTemplate: '<h1>Title</h1>',
-  footerTemplate: '<div><span class="pageNumber"></span></div>',
-  preferCSSPageSize: true
-}).then(data => {
-  fs.writeFile(pdfPath, data, (error) => {
-    if (error) throw error
-    console.log(`Wrote PDF successfully to ${pdfPath}`)
+webContents
+  .printToPDF({
+    landscape: true,
+    displayHeaderFooter: true,
+    printBackground: true,
+    scale: 2,
+    pageSize: 'Ledger',
+    margins: {
+      top: 2,
+      bottom: 2,
+      left: 2,
+      right: 2
+    },
+    pageRanges: '1-5, 8, 11-13',
+    headerTemplate: '<h1>Title</h1>',
+    footerTemplate: '<div><span class="pageNumber"></span></div>',
+    preferCSSPageSize: true
   })
-}).catch(error => {
-  console.log(`Failed to write PDF to ${pdfPath}: `, error)
-})
+  .then((data) => {
+    fs.writeFile(pdfPath, data, (error) => {
+      if (error) throw error
+      console.log(`Wrote PDF successfully to ${pdfPath}`)
+    })
+  })
+  .catch((error) => {
+    console.log(`Failed to write PDF to ${pdfPath}: `, error)
+  })
 ```
 
-## Planned Breaking API Changes (20.0)
+## Breaking API Changes (20.0)
 
 ### Removed: macOS 10.11 / 10.12 support
 
@@ -1227,14 +2144,14 @@ has a change to its arguments.  This handler no longer is passed a frame
 [`WebFrameMain`](api/web-frame-main.md), but instead is passed the `origin`, which
 is the origin that is checking for device permission.
 
-## Planned Breaking API Changes (19.0)
+## Breaking API Changes (19.0)
 
 ### Removed: IA32 Linux binaries
 
 This is a result of Chromium 102.0.4999.0 dropping support for IA32 Linux.
 This concludes the [removal of support for IA32 Linux](#removed-ia32-linux-support).
 
-## Planned Breaking API Changes (18.0)
+## Breaking API Changes (18.0)
 
 ### Removed: `nativeWindowOpen`
 
@@ -1246,7 +2163,7 @@ Since Electron 15, `nativeWindowOpen` has been enabled by default.
 See the documentation for [window.open in Electron](api/window-open.md)
 for more details.
 
-## Planned Breaking API Changes (17.0)
+## Breaking API Changes (17.0)
 
 ### Removed: `desktopCapturer.getSources` in the renderer
 
@@ -1260,10 +2177,7 @@ If you need this functionality, it can be replaced as follows:
 // Main process
 const { ipcMain, desktopCapturer } = require('electron')
 
-ipcMain.handle(
-  'DESKTOP_CAPTURER_GET_SOURCES',
-  (event, opts) => desktopCapturer.getSources(opts)
-)
+ipcMain.handle('DESKTOP_CAPTURER_GET_SOURCES', (event, opts) => desktopCapturer.getSources(opts))
 ```
 
 ```js
@@ -1289,7 +2203,7 @@ Since Electron 15, `nativeWindowOpen` has been enabled by default.
 See the documentation for [window.open in Electron](api/window-open.md)
 for more details.
 
-## Planned Breaking API Changes (16.0)
+## Breaking API Changes (16.0)
 
 ### Behavior Changed: `crashReporter` implementation switched to Crashpad on Linux
 
@@ -1313,7 +2227,7 @@ Electron apps.
 See [here](#removed-desktopcapturergetsources-in-the-renderer) for details on
 how to replace this API in your app.
 
-## Planned Breaking API Changes (15.0)
+## Breaking API Changes (15.0)
 
 ### Default Changed: `nativeWindowOpen` defaults to `true`
 
@@ -1337,7 +2251,7 @@ console.log(app.runningUnderRosettaTranslation)
 console.log(app.runningUnderARM64Translation)
 ```
 
-## Planned Breaking API Changes (14.0)
+## Breaking API Changes (14.0)
 
 ### Removed: `remote` module
 
@@ -1434,7 +2348,7 @@ webContents.on('did-create-window', (window, details) => {
 })
 ```
 
-## Planned Breaking API Changes (13.0)
+## Breaking API Changes (13.0)
 
 ### API Changed: `session.setPermissionCheckHandler(handler)`
 
@@ -1558,7 +2472,7 @@ webContents.setWindowOpenHandler((details) => {
 })
 ```
 
-## Planned Breaking API Changes (12.0)
+## Breaking API Changes (12.0)
 
 ### Removed: Pepper Flash support
 
@@ -1657,7 +2571,7 @@ shell.moveItemToTrash(path)
 shell.trashItem(path).then(/* ... */)
 ```
 
-## Planned Breaking API Changes (11.0)
+## Breaking API Changes (11.0)
 
 ### Removed: `BrowserView.{destroy, fromId, fromWebContents, getAllViews}` and `id` property of `BrowserView`
 
@@ -1667,7 +2581,7 @@ has also been removed.
 
 For more detailed information, see [#23578](https://github.com/electron/electron/pull/23578).
 
-## Planned Breaking API Changes (10.0)
+## Breaking API Changes (10.0)
 
 ### Deprecated: `companyName` argument to `crashReporter.start()`
 
@@ -1745,7 +2659,9 @@ The APIs are now synchronous and the optional callback is no longer needed.
 
 ```js
 // Deprecated
-protocol.unregisterProtocol(scheme, () => { /* ... */ })
+protocol.unregisterProtocol(scheme, () => {
+  /* ... */
+})
 // Replace with
 protocol.unregisterProtocol(scheme)
 ```
@@ -1774,7 +2690,9 @@ The APIs are now synchronous and the optional callback is no longer needed.
 
 ```js
 // Deprecated
-protocol.registerFileProtocol(scheme, handler, () => { /* ... */ })
+protocol.registerFileProtocol(scheme, handler, () => {
+  /* ... */
+})
 // Replace with
 protocol.registerFileProtocol(scheme, handler)
 ```
@@ -1789,13 +2707,15 @@ and `protocol.isProtocolIntercepted` instead.
 
 ```js
 // Deprecated
-protocol.isProtocolHandled(scheme).then(() => { /* ... */ })
+protocol.isProtocolHandled(scheme).then(() => {
+  /* ... */
+})
 // Replace with
 const isRegistered = protocol.isProtocolRegistered(scheme)
 const isIntercepted = protocol.isProtocolIntercepted(scheme)
 ```
 
-## Planned Breaking API Changes (9.0)
+## Breaking API Changes (9.0)
 
 ### Default Changed: Loading non-context-aware native modules in the renderer process is disabled by default
 
@@ -1891,7 +2811,7 @@ error.
 The `shell.openItem` API has been replaced with an asynchronous `shell.openPath` API.
 You can see the original API proposal and reasoning [here](https://github.com/electron/governance/blob/main/wg-api/spec-documents/shell-openitem.md).
 
-## Planned Breaking API Changes (8.0)
+## Breaking API Changes (8.0)
 
 ### Behavior Changed: Values sent over IPC are now serialized with Structured Clone Algorithm
 
@@ -2006,11 +2926,17 @@ Use the new `updated` event on the `nativeTheme` module instead.
 
 ```js
 // Deprecated
-systemPreferences.on('inverted-color-scheme-changed', () => { /* ... */ })
-systemPreferences.on('high-contrast-color-scheme-changed', () => { /* ... */ })
+systemPreferences.on('inverted-color-scheme-changed', () => {
+  /* ... */
+})
+systemPreferences.on('high-contrast-color-scheme-changed', () => {
+  /* ... */
+})
 
 // Replace with
-nativeTheme.on('updated', () => { /* ... */ })
+nativeTheme.on('updated', () => {
+  /* ... */
+})
 ```
 
 ### Deprecated: methods in `systemPreferences`
@@ -2044,7 +2970,7 @@ systemPreferences.isHighContrastColorScheme()
 nativeTheme.shouldUseHighContrastColors
 ```
 
-## Planned Breaking API Changes (7.0)
+## Breaking API Changes (7.0)
 
 ### Deprecated: Atom.io Node Headers URL
 
@@ -2093,13 +3019,11 @@ webFrame.setIsolatedWorldContentSecurityPolicy(worldId, csp)
 webFrame.setIsolatedWorldHumanReadableName(worldId, name)
 webFrame.setIsolatedWorldSecurityOrigin(worldId, securityOrigin)
 // Replace with
-webFrame.setIsolatedWorldInfo(
-  worldId,
-  {
-    securityOrigin: 'some_origin',
-    name: 'human_readable_name',
-    csp: 'content_security_policy'
-  })
+webFrame.setIsolatedWorldInfo(worldId, {
+  securityOrigin: 'some_origin',
+  name: 'human_readable_name',
+  csp: 'content_security_policy'
+})
 ```
 
 ### Removed: `marked` property on `getBlinkMemoryInfo`
@@ -2192,7 +3116,7 @@ These functions now have two forms, synchronous and Promise-based asynchronous:
 * `dialog.showOpenDialog()`/`dialog.showOpenDialogSync()` [#16973](https://github.com/electron/electron/pull/16973)
 * `dialog.showSaveDialog()`/`dialog.showSaveDialogSync()` [#17054](https://github.com/electron/electron/pull/17054)
 
-## Planned Breaking API Changes (6.0)
+## Breaking API Changes (6.0)
 
 ### API Changed: `win.setMenu(null)` is now `win.removeMenu()`
 
@@ -2274,7 +3198,7 @@ tray.setHighlightMode(mode)
 // API will be removed in v7.0 without replacement.
 ```
 
-## Planned Breaking API Changes (5.0)
+## Breaking API Changes (5.0)
 
 ### Default Changed: `nodeIntegration` and `webviewTag` default to false, `contextIsolation` defaults to true
 
@@ -2313,13 +3237,11 @@ webFrame.setIsolatedWorldContentSecurityPolicy(worldId, csp)
 webFrame.setIsolatedWorldHumanReadableName(worldId, name)
 webFrame.setIsolatedWorldSecurityOrigin(worldId, securityOrigin)
 // Replace with
-webFrame.setIsolatedWorldInfo(
-  worldId,
-  {
-    securityOrigin: 'some_origin',
-    name: 'human_readable_name',
-    csp: 'content_security_policy'
-  })
+webFrame.setIsolatedWorldInfo(worldId, {
+  securityOrigin: 'some_origin',
+  name: 'human_readable_name',
+  csp: 'content_security_policy'
+})
 ```
 
 ### API Changed: `webFrame.setSpellCheckProvider` now takes an asynchronous callback
@@ -2336,7 +3258,7 @@ webFrame.setSpellCheckProvider('en-US', true, {
 // Replace with
 webFrame.setSpellCheckProvider('en-US', {
   spellCheck: (words, callback) => {
-    callback(words.filter(text => spellchecker.isMisspelled(text)))
+    callback(words.filter((text) => spellchecker.isMisspelled(text)))
   }
 })
 ```
@@ -2366,7 +3288,7 @@ const factor = webContents.getZoomFactor()
 console.log(factor)
 ```
 
-## Planned Breaking API Changes (4.0)
+## Breaking API Changes (4.0)
 
 The following list includes the breaking API changes made in Electron 4.0.
 
@@ -2588,8 +3510,12 @@ webview.setAttribute('guestinstance', instanceId)
 // There is no replacement for this API
 
 // Keyboard listeners no longer work on webview tag
-webview.onkeydown = () => { /* handler */ }
-webview.onkeyup = () => { /* handler */ }
+webview.onkeydown = () => {
+  /* handler */
+}
+webview.onkeyup = () => {
+  /* handler */
+}
 ```
 
 ### Node Headers URL
@@ -2604,6 +3530,18 @@ Replace with: https://atom.io/download/electron
 ## Breaking API Changes (2.0)
 
 The following list includes the breaking API changes made in Electron 2.0.
+
+### `autoUpdater`
+
+```js
+// Deprecated
+autoUpdater.setFeedURL(url, headers)
+// Replace with
+autoUpdater.setFeedURL({
+  url,
+  headers
+})
+```
 
 ### `BrowserWindow`
 

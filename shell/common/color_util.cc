@@ -5,10 +5,15 @@
 #include "shell/common/color_util.h"
 
 #include <algorithm>
-#include <cmath>
 
 #include "content/public/common/color_parser.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
+
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include "skia/ext/skia_utils_win.h"
+#endif
 
 namespace {
 
@@ -28,7 +33,7 @@ bool IsHexFormatWithAlpha(const std::string& str) {
 
 namespace electron {
 
-SkColor ParseCSSColor(const std::string& color_string) {
+std::optional<SkColor> ParseCSSColor(const std::string& color_string) {
   // ParseCssColorString expects RGBA and we historically use ARGB
   // so we need to convert before passing to ParseCssColorString.
   std::string converted_color_str;
@@ -42,7 +47,7 @@ SkColor ParseCSSColor(const std::string& color_string) {
 
   SkColor color;
   if (!content::ParseCssColorString(converted_color_str, &color))
-    color = SK_ColorWHITE;
+    return std::nullopt;
 
   return color;
 }
@@ -61,5 +66,11 @@ std::string ToRGBAHex(SkColor color, bool include_hash) {
   }
   return color_str;
 }
+
+#if BUILDFLAG(IS_WIN)
+SkColor GetSysSkColor(int which) {
+  return skia::COLORREFToSkColor(GetSysColor(which));
+}
+#endif
 
 }  // namespace electron

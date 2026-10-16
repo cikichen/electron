@@ -6,15 +6,12 @@
 
 #include <memory>
 
+#include "shell/common/api/api.mojom.h"
 #include "shell/renderer/renderer_client_base.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace base {
 class ProcessMetrics;
-}
-
-namespace blink {
-class WebLocalFrame;
 }
 
 namespace electron {
@@ -30,20 +27,28 @@ class ElectronSandboxedRendererClient : public RendererClientBase {
   ElectronSandboxedRendererClient& operator=(
       const ElectronSandboxedRendererClient&) = delete;
 
-  void InitializeBindings(v8::Local<v8::Object> binding,
-                          v8::Local<v8::Context> context,
-                          content::RenderFrame* render_frame);
+  // The `process`, `require` and `electron` module for the frame's preload
+  // scripts, then runs them.
+  void SetUpPreloadEnvironment(
+      v8::Isolate* isolate,
+      v8::Local<v8::Context> context,
+      content::RenderFrame* render_frame,
+      const mojom::RendererStartupDataPtr& startup_data);
   // electron::RendererClientBase:
-  void DidCreateScriptContext(v8::Local<v8::Context> context,
+  void DidCreateScriptContext(v8::Isolate* isolate,
+                              v8::Local<v8::Context> context,
                               content::RenderFrame* render_frame) override;
-  void WillReleaseScriptContext(v8::Local<v8::Context> context,
+  void WillReleaseScriptContext(v8::Isolate* isolate,
+                                v8::Local<v8::Context> context,
                                 content::RenderFrame* render_frame) override;
   // content::ContentRendererClient:
+  bool HasScriptsToInject(content::RenderFrame* render_frame) const override;
   void RenderFrameCreated(content::RenderFrame*) override;
   void RunScriptsAtDocumentStart(content::RenderFrame* render_frame) override;
   void RunScriptsAtDocumentEnd(content::RenderFrame* render_frame) override;
   void WillEvaluateServiceWorkerOnWorkerThread(
       blink::WebServiceWorkerContextProxy* context_proxy,
+      v8::Isolate* const isolate,
       v8::Local<v8::Context> v8_context,
       int64_t service_worker_version_id,
       const GURL& service_worker_scope,
@@ -53,7 +58,11 @@ class ElectronSandboxedRendererClient : public RendererClientBase {
       v8::Local<v8::Context> context,
       int64_t service_worker_version_id,
       const GURL& service_worker_scope,
-      const GURL& script_url) override;
+      const GURL& script_url,
+      const blink::ServiceWorkerToken& service_worker_token) override;
+  std::unique_ptr<media::KeySystemSupportRegistration> GetSupportedKeySystems(
+      content::RenderFrame* render_frame,
+      media::GetSupportedKeySystemsCB cb) override;
 
  private:
   void EmitProcessEvent(content::RenderFrame* render_frame,

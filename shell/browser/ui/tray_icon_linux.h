@@ -9,6 +9,7 @@
 #include <string>
 
 #include "shell/browser/ui/tray_icon.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/linux/status_icon_linux.h"
 
 class StatusIconLinuxDbus;
@@ -47,7 +48,7 @@ class TrayIconLinux : public TrayIcon, public ui::StatusIconLinux::Delegate {
 
   scoped_refptr<StatusIconLinuxDbus> status_icon_dbus_;
   std::unique_ptr<StatusIconGtk> status_icon_gtk_;
-  StatusIconType status_icon_type_;
+  StatusIconType status_icon_type_ = StatusIconType::kDbus;
 
   gfx::ImageSkia image_;
   std::u16string tool_tip_;

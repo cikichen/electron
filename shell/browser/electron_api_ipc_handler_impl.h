@@ -18,7 +18,16 @@ namespace content {
 class RenderFrameHost;
 }
 
+namespace gin {
+template <typename T>
+class WeakCell;
+}  // namespace gin
+
 namespace electron {
+
+namespace api {
+class IpcMainEvent;
+}  // namespace api
 class ElectronApiIPCHandlerImpl : public mojom::ElectronApiIPC,
                                   private content::WebContentsObserver {
  public:
@@ -38,19 +47,19 @@ class ElectronApiIPCHandlerImpl : public mojom::ElectronApiIPC,
   // mojom::ElectronApiIPC:
   void Message(bool internal,
                const std::string& channel,
-               blink::CloneableMessage arguments) override;
+               electron::SerializedValue arguments) override;
   void Invoke(bool internal,
               const std::string& channel,
-              blink::CloneableMessage arguments,
+              electron::SerializedValue arguments,
               InvokeCallback callback) override;
   void ReceivePostMessage(const std::string& channel,
                           blink::TransferableMessage message) override;
   void MessageSync(bool internal,
                    const std::string& channel,
-                   blink::CloneableMessage arguments,
+                   electron::SerializedValue arguments,
                    MessageSyncCallback callback) override;
   void MessageHost(const std::string& channel,
-                   blink::CloneableMessage arguments) override;
+                   electron::SerializedValue arguments) override;
 
   base::WeakPtr<ElectronApiIPCHandlerImpl> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
@@ -65,9 +74,9 @@ class ElectronApiIPCHandlerImpl : public mojom::ElectronApiIPC,
   void OnConnectionError();
 
   content::RenderFrameHost* GetRenderFrameHost();
-  api::Session* GetSession();
+  gin::WeakCell<api::Session>* GetSession();
 
-  gin::Handle<gin_helper::internal::Event> MakeIPCEvent(
+  api::IpcMainEvent* MakeIPCEvent(
       v8::Isolate* isolate,
       api::Session* session,
       bool internal,

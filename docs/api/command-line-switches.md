@@ -49,6 +49,10 @@ Disables the disk cache for HTTP requests.
 
 Disable HTTP/2 and SPDY/3.1 protocols.
 
+### --disable-geolocation _macOS_
+
+Disables the Geolocation API. Permission requests for geolocation will be denied internally regardless of the decision made by a handler set via `session.setPermissionRequestHandler`. This functionality is currently implemented only for macOS. Has no effect on other platforms.
+
 ### --disable-renderer-backgrounding
 
 Prevents Chromium from lowering the priority of invisible pages' renderer
@@ -86,7 +90,7 @@ Field trials to be forcefully enabled or disabled.
 
 For example: `WebRTC-Audio-Red-For-Opus/Enabled/`
 
-### --host-rules=`rules`
+### --host-rules=`rules` _Deprecated_
 
 A comma-separated list of `rules` that control how hostnames are mapped.
 
@@ -104,9 +108,23 @@ These mappings apply to the endpoint host in a net request (the TCP connect
 and host resolver in a direct connection, and the `CONNECT` in an HTTP proxy
 connection, and the endpoint host in a `SOCKS` proxy connection).
 
+**Deprecated:** Use the `--host-resolver-rules` switch instead.
+
 ### --host-resolver-rules=`rules`
 
-Like `--host-rules` but these `rules` only apply to the host resolver.
+A comma-separated list of `rules` that control how hostnames are mapped.
+
+For example:
+
+* `MAP * 127.0.0.1` Forces all hostnames to be mapped to 127.0.0.1
+* `MAP *.google.com proxy` Forces all google.com subdomains to be resolved to
+  "proxy".
+* `MAP test.com [::1]:77` Forces "test.com" to resolve to IPv6 loopback. Will
+  also force the port of the resulting socket address to be 77.
+* `MAP * baz, EXCLUDE www.google.com` Remaps everything to "baz", except for
+  "www.google.com".
+
+These `rules` only apply to the host resolver.
 
 ### --ignore-certificate-errors
 
@@ -154,7 +172,7 @@ Enables net log events to be saved and writes them to `path`.
 Sets the verbosity of logging when used together with `--enable-logging`.
 `N` should be one of [Chrome's LogSeverities][severities].
 
-Note that two complimentary logging mechanisms in Chromium -- `LOG()`
+Note that two complementary logging mechanisms in Chromium -- `LOG()`
 and `VLOG()` -- are controlled by different switches. `--log-level`
 controls `LOG()` messages, while `--v` and `--vmodule` control `VLOG()`
 messages. So you may want to use a combination of these three switches
@@ -178,6 +196,43 @@ proxy server flags that are passed.
 Disables the Chromium [sandbox](https://www.chromium.org/developers/design-documents/sandbox).
 Forces renderer process and Chromium helper processes to run un-sandboxed.
 Should only be used for testing.
+
+### --no-stdio-init
+
+Disable stdio initialization during node initialization.
+Used to avoid node initialization crash when the nul device is disabled on Windows platform.
+
+### --ozone-platform=`platform` _Linux_
+
+Forces Electron to use a specific display backend instead of choosing one
+automatically. `platform` can be:
+
+* `x11` - Connect to an X server (this includes XWayland).
+* `wayland` - Connect to a Wayland compositor as a native Wayland client.
+* `headless` - Don't connect to any display server. No windows are shown on
+  screen, which is useful for automated testing and CI.
+
+For example, `my-app --ozone-platform=x11` runs the app under XWayland on a
+Wayland desktop.
+
+This switch must be passed on the command line (for example in a `.desktop`
+file or launcher script). Setting it with `app.commandLine.appendSwitch` does
+not work, because the display backend is chosen before your app's main script
+runs.
+
+When this switch is not passed, Electron picks a backend at startup:
+
+1. It checks which display servers it can reach.
+   * X11 is reachable if `DISPLAY` is set to a non-empty value or `--display`
+     is passed.
+   * Wayland is reachable if a Wayland connection is configured. Electron checks
+     `WAYLAND_SOCKET`, then `WAYLAND_DISPLAY`, then whether `XDG_RUNTIME_DIR`
+     contains `wayland-0`, the same order libwayland uses. Only the first of
+     these that is set is considered, so an empty `WAYLAND_DISPLAY` marks
+     Wayland as unreachable even if `wayland-0` exists.
+2. If exactly one display server is reachable, Electron uses it.
+3. If both or neither are reachable, Electron uses Wayland when
+   `XDG_SESSION_TYPE` is `wayland`, and X11 otherwise.
 
 ### --proxy-bypass-list=`hosts`
 
@@ -236,6 +291,40 @@ This switch only works when `--enable-logging` is also passed.
 
 See also `--enable-logging`, `--log-level`, and `--v`.
 
+### --widevine-cdm-path=`path` _Experimental_
+
+Specifies the directory containing Widevine CDM files.
+
+Electron looks for `manifest.json` in this directory and then loads the
+platform-specific Widevine CDM library. If this switch is not set, Electron
+checks for bundled Widevine CDM files at
+`<Electron executable directory>/WidevineCdm`.
+
+This switch is ignored in packaged applications to prevent loading library
+code from an arbitrary command-line path. Packaged applications must bundle
+the `WidevineCdm` directory beside the Electron executable.
+
+For unpackaged applications on Linux, pass this switch on Electron's process
+command line. Calling `app.commandLine.appendSwitch` from the app's main script
+is too late because the zygote loads library CDMs before that script runs. When
+the manifest does not contain a version, pass `--widevine-cdm-version` on the
+process command line as well. Alternatively, bundle the `WidevineCdm` directory
+beside the Electron executable.
+
+This switch is only effective in builds where Widevine support is enabled
+(`enable_widevine = true`).
+
+For CDM packaging, licensing, and VMP signing expectations, see
+[Testing Widevine CDM](../tutorial/testing-widevine-cdm.md).
+
+### --widevine-cdm-version=`version` _Experimental_
+
+Specifies the Widevine CDM version when it cannot be read from `manifest.json`.
+You can omit this switch when the manifest already contains the version.
+
+This switch is only effective in builds where Widevine support is enabled
+(`enable_widevine = true`).
+
 ### --force_high_performance_gpu
 
 Force using discrete GPU when there are multiple GPUs available.
@@ -292,9 +381,20 @@ Specify ways of the inspector web socket url exposure.
 
 By default inspector websocket url is available in stderr and under /json/list endpoint on `http://host:port/json/list`.
 
-### `--experimental-network-inspector`
+### `--experimental-network-inspection`
 
-Enable support for devtools network inspector events, for visibility into requests made by the nodejs `http` and `https` modules.
+Enable support for DevTools network inspector events, for visibility into requests made by the nodejs `http` and `https` modules.
+
+### `--experimental-inspector-network-resource`
+
+Enable support for resolving source maps over the network when using the Node.js inspector.
+
+When enabled, DevTools can retrieve remote source maps for main and utility
+process scripts via the Node.js inspector.
+
+**Note:** When enabled, the Node.js inspector will make network requests to
+URLs specified in source maps. Be mindful of this in environments where the
+process has access to internal networks.
 
 ### `--no-deprecation`
 
@@ -330,6 +430,41 @@ Affects the default output directory of [v8.setHeapSnapshotNearHeapLimit](https:
 ### `--no-experimental-global-navigator`
 
 Disable exposition of [Navigator API][] on the global scope from Node.js.
+
+### `--experimental-transform-types`
+
+Enables the [transformation](https://nodejs.org/api/typescript.html#type-stripping)
+of TypeScript-only syntax into JavaScript code.
+
+## Chromium Flags
+
+There isn't a documented list of all Chromium switches, but there are a few ways to find them.
+
+The easiest way is through Chromium's flags page, which you can access at `about://flags`. These flags don't directly match switch names, but they show up in the process's command-line arguments.
+
+To see these arguments, enable a flag in `about://flags`, then go to `about://version` in Chromium. You'll find a list of command-line arguments, including `--flag-switches-begin --your --list --flag-switches-end`, which contains the list of your flag enabled switches.
+
+Most flags are included as part of `--enable-features=`, but some are standalone switches, like `--enable-experimental-web-platform-features`.
+
+A complete list of flags exists in [Chromium's flag metadata page](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/flag-metadata.json), but this list includes platform, environment and GPU specific, expired and potentially non-functional flags, so many of them might not always work in every situation.
+
+Keep in mind that standalone switches can sometimes be split into individual features, so there's no fully complete list of switches.
+
+Finally, you'll need to ensure that the version of Chromium in Electron matches the version of the browser you're using to cross-reference the switches.
+
+### Chromium features relevant to Electron apps
+
+* `AlwaysLogLOAFURL`: enables script attribution for
+  [`long-animation-frame`](https://developer.mozilla.org/en-US/docs/Web/API/Performance_API/Long_animation_frame_timing)
+  `PerformanceObserver` events for non-http(s), non-data, non-blob URLs (such as `file:` or custom
+  protocol URLs).
+* `SpareRendererForSitePerProcess`: keeps a spare renderer process running at all times so
+  that a new window, or a navigation that needs a new process, does not wait for a process to
+  launch. Electron starts one such process when the default session is created, for the first
+  sandboxed window that uses it; enable this if the app opens windows regularly and the memory of an
+  idle renderer is acceptable. Only windows whose `webPreferences` are sandboxed and set none of `additionalArguments`,
+  `enableBlinkFeatures`, `disableBlinkFeatures`, `experimentalFeatures`, `offscreen` or (macOS)
+  `scrollBounce` can use it.
 
 [app]: app.md
 [append-switch]: command-line.md#commandlineappendswitchswitch-value

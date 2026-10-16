@@ -8,17 +8,17 @@
 #include <list>
 #include <memory>
 
-#include "base/memory/scoped_refptr.h"
+#include "base/memory/raw_ptr.h"
 #include "base/process/process_metrics.h"
+#include "services/resource_coordinator/public/mojom/memory_instrumentation/memory_instrumentation.mojom-forward.h"
 #include "shell/common/node_bindings.h"
-#include "uv.h"  // NOLINT(build/include_directory)
+#include "shell/common/uv_includes.h"
 
 namespace base {
 class FilePath;
 }
 
 namespace gin_helper {
-class Arguments;
 class Dictionary;
 template <typename T>
 class Promise;
@@ -57,18 +57,16 @@ class ElectronBindings {
   static void Crash();
 
   static void DidReceiveMemoryDump(
-      v8::Global<v8::Context> context,
       gin_helper::Promise<gin_helper::Dictionary> promise,
       base::ProcessId target_pid,
-      bool success,
+      memory_instrumentation::mojom::RequestOutcome outcome,
       std::unique_ptr<memory_instrumentation::GlobalMemoryDump> dump);
 
  private:
   static void Hang();
   static v8::Local<v8::Value> GetHeapStatistics(v8::Isolate* isolate);
   static v8::Local<v8::Value> GetCreationTime(v8::Isolate* isolate);
-  static v8::Local<v8::Value> GetSystemMemoryInfo(v8::Isolate* isolate,
-                                                  gin_helper::Arguments* args);
+  static v8::Local<v8::Value> GetSystemMemoryInfo(v8::Isolate* isolate);
   static v8::Local<v8::Promise> GetProcessMemoryInfo(v8::Isolate* isolate);
   static v8::Local<v8::Value> GetBlinkMemoryInfo(v8::Isolate* isolate);
   static v8::Local<v8::Value> GetCPUUsage(base::ProcessMetrics* metrics,
@@ -81,7 +79,7 @@ class ElectronBindings {
   static void OnCallNextTick(uv_async_t* handle);
 
   UvHandle<uv_async_t> call_next_tick_async_;
-  std::list<node::Environment*> pending_next_ticks_;
+  std::list<raw_ptr<node::Environment>> pending_next_ticks_;
   std::unique_ptr<base::ProcessMetrics> metrics_;
 };
 

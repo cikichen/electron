@@ -8,11 +8,11 @@
 #include <string_view>
 #include <utility>
 
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
 #include "shell/browser/javascript_environment.h"
 #include "shell/common/gin_helper/event.h"
-#include "shell/common/gin_helper/event_emitter.h"
+#include "shell/common/gin_helper/event_emitter_caller.h"
+#include "shell/common/gin_helper/function_template_cache.h"
 
 namespace gin_helper {
 
@@ -32,8 +32,10 @@ class EventEmitterMixin {
     v8::Local<v8::Object> wrapper;
     if (!static_cast<T*>(this)->GetWrapper(isolate).ToLocal(&wrapper))
       return false;
-    gin::Handle<internal::Event> event = internal::Event::New(isolate);
-    gin_helper::EmitEvent(isolate, wrapper, name, event,
+    internal::Event* event = internal::Event::New(isolate);
+    v8::Local<v8::Object> event_object =
+        event->GetWrapper(isolate).ToLocalChecked();
+    gin_helper::EmitEvent(isolate, wrapper, name, event_object,
                           std::forward<Args>(args)...);
     return event->GetDefaultPrevented();
   }
@@ -53,19 +55,19 @@ class EventEmitterMixin {
   EventEmitterMixin() = default;
 
   gin::ObjectTemplateBuilder GetObjectTemplateBuilder(v8::Isolate* isolate) {
-    gin::PerIsolateData* data = gin::PerIsolateData::From(isolate);
     auto* wrapper_info = &(static_cast<T*>(this)->kWrapperInfo);
     v8::Local<v8::FunctionTemplate> constructor =
-        data->GetFunctionTemplate(wrapper_info);
+        GetCachedFunctionTemplate(isolate, wrapper_info);
+
+    const char* class_name = static_cast<T*>(this)->GetClassName();
+
     if (constructor.IsEmpty()) {
       constructor = v8::FunctionTemplate::New(isolate);
-      constructor->SetClassName(
-          gin::StringToV8(isolate, static_cast<T*>(this)->GetTypeName()));
+      constructor->SetClassName(gin::StringToV8(isolate, class_name));
       constructor->Inherit(internal::GetEventEmitterTemplate(isolate));
-      data->SetFunctionTemplate(wrapper_info, constructor);
+      SetCachedFunctionTemplate(isolate, wrapper_info, constructor);
     }
-    return gin::ObjectTemplateBuilder(isolate,
-                                      static_cast<T*>(this)->GetTypeName(),
+    return gin::ObjectTemplateBuilder(isolate, class_name,
                                       constructor->InstanceTemplate());
   }
 };

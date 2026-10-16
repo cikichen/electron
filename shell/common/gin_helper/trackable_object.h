@@ -8,13 +8,10 @@
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
+#include "base/no_destructor.h"
 #include "shell/common/gin_helper/cleaned_up_at_exit.h"
 #include "shell/common/gin_helper/event_emitter.h"
 #include "shell/common/key_weak_map.h"
-
-namespace base {
-class SupportsUserData;
-}
 
 namespace gin_helper {
 
@@ -29,12 +26,6 @@ class TrackableObjectBase : public CleanedUpAtExit {
 
   // The ID in weak map.
   [[nodiscard]] constexpr int32_t weak_map_id() const { return weak_map_id_; }
-
-  // Wrap TrackableObject into a class that SupportsUserData.
-  void AttachAsUserData(base::SupportsUserData* wrapped);
-
-  // Get the weak_map_id from SupportsUserData.
-  static int32_t GetIDFromWrappedClass(base::SupportsUserData* wrapped);
 
  protected:
   ~TrackableObjectBase() override;
@@ -61,7 +52,8 @@ class TrackableObject : public TrackableObjectBase, public EventEmitter<T> {
     v8::HandleScope scope(gin_helper::Wrappable<T>::isolate());
     v8::Local<v8::Object> wrapper = gin_helper::Wrappable<T>::GetWrapper();
     if (!wrapper.IsEmpty()) {
-      wrapper->SetAlignedPointerInInternalField(0, nullptr);
+      wrapper->SetAlignedPointerInInternalField(
+          0, nullptr, v8::kEmbedderDataTypeTagDefault);
       gin_helper::WrappableBase::wrapper_.ClearWeak();
     }
   }
@@ -70,7 +62,8 @@ class TrackableObject : public TrackableObjectBase, public EventEmitter<T> {
     v8::HandleScope scope(gin_helper::Wrappable<T>::isolate());
     v8::Local<v8::Object> wrapper = gin_helper::Wrappable<T>::GetWrapper();
     return wrapper->InternalFieldCount() == 0 ||
-           wrapper->GetAlignedPointerFromInternalField(0) == nullptr;
+           wrapper->GetAlignedPointerFromInternalField(
+               0, v8::kEmbedderDataTypeTagDefault) == nullptr;
   }
 
   // Finds out the TrackableObject from its ID in weak map.
@@ -88,15 +81,6 @@ class TrackableObject : public TrackableObjectBase, public EventEmitter<T> {
     return self;
   }
 
-  // Finds out the TrackableObject from the class it wraps.
-  static T* FromWrappedClass(v8::Isolate* isolate,
-                             base::SupportsUserData* wrapped) {
-    int32_t id = GetIDFromWrappedClass(wrapped);
-    if (!id)
-      return nullptr;
-    return FromWeakMapID(isolate, id);
-  }
-
   // Returns all objects in this class's weak map.
   static std::vector<v8::Local<v8::Object>> GetAll(v8::Isolate* isolate) {
     if (weak_map_)
@@ -105,10 +89,19 @@ class TrackableObject : public TrackableObjectBase, public EventEmitter<T> {
       return {};
   }
 
+  static std::vector<T*> GetAllNative() {
+    std::vector<T*> all;
+    all.reserve(instances().size());
+    for (TrackableObject<T>* instance : instances())
+      all.push_back(static_cast<T*>(instance));
+    return all;
+  }
+
   // Removes this instance from the weak map.
   void RemoveFromWeakMap() {
     if (weak_map_)
       weak_map_->Remove(weak_map_id());
+    std::erase(instances(), this);
   }
 
  protected:
@@ -120,10 +113,16 @@ class TrackableObject : public TrackableObjectBase, public EventEmitter<T> {
       weak_map_ = new electron::KeyWeakMap<int32_t>;
     }
     weak_map_->Set(isolate, weak_map_id(), wrapper);
+    instances().push_back(this);
     gin_helper::WrappableBase::InitWith(isolate, wrapper);
   }
 
  private:
+  static std::vector<TrackableObject<T>*>& instances() {
+    static base::NoDestructor<std::vector<TrackableObject<T>*>> instances;
+    return *instances;
+  }
+
   static electron::KeyWeakMap<int32_t>* weak_map_;  // leaked on purpose
 };
 
